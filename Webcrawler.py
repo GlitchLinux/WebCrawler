@@ -538,9 +538,17 @@ class WebCrawler(QMainWindow):
         if self.webengine_available:
             try:
                 self.web_view = QWebEngineView()
+                
+                # Configure WebEngine to appear more like a regular browser
+                profile = self.web_view.page().profile()
+                profile.setHttpUserAgent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                
+                # Enable cookies and persistent storage
+                profile.setPersistentCookiesPolicy(profile.PersistentCookiesPolicy.ForcePersistentCookies)
+                
                 self.web_view.urlChanged.connect(self.web_url_changed)
                 self.web_view.loadFinished.connect(self.web_load_finished)
-                print("WebEngine initialized successfully")
+                print("WebEngine initialized successfully with browser-like settings")
             except Exception as e:
                 print(f"WebEngine initialization failed: {e}")
                 # Fall back to text view
@@ -850,7 +858,18 @@ class WebCrawler(QMainWindow):
         self.current_items = []
         
         try:
-            response = requests.get(url, timeout=10)
+            # Use browser-like headers to avoid being flagged as a bot
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+            }
+            
+            response = requests.get(url, timeout=10, headers=headers)
             response.raise_for_status()
             
             soup = BeautifulSoup(response.content, 'html.parser')
@@ -1244,7 +1263,18 @@ class WebCrawler(QMainWindow):
         """Load HTML content as text for fallback mode"""
         try:
             if url and url.startswith(('http://', 'https://')):
-                response = requests.get(url, timeout=10)
+                # Use browser-like headers to avoid being flagged as a bot
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate',
+                    'DNT': '1',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1',
+                }
+                
+                response = requests.get(url, timeout=10, headers=headers)
                 response.raise_for_status()
                 if hasattr(self.web_view, 'setPlainText'):
                     self.web_view.setPlainText(response.text)
