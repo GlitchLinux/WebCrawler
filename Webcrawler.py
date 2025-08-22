@@ -15,7 +15,15 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QDialog, QSpinBox, QCheckBox, QGridLayout, QFontDialog,
                              QScrollArea)
 from PyQt6.QtGui import QIcon, QFont, QPalette, QColor, QAction, QFontDatabase, QPixmap
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize, QUrl
+
+# Try to import WebEngine, fall back to simple text view if not available
+try:
+    from PyQt6.QtWebEngineWidgets import QWebEngineView
+    WEBENGINE_AVAILABLE = True
+except ImportError:
+    WEBENGINE_AVAILABLE = False
+    print("PyQt6-WebEngine not available. Surf mode will use simple text rendering.")
 
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
@@ -287,6 +295,7 @@ class WebCrawler(QMainWindow):
         self.sort_column = 0
         self.sort_order = Qt.SortOrder.AscendingOrder
         self.view_mode = 'details'  # 'details' or 'list'
+        self.surf_mode = False  # Toggle for web browser mode
         
         # Set up paths for assets
         self.app_dir = "/usr/local/bin/WebCrawler"
@@ -306,7 +315,8 @@ class WebCrawler(QMainWindow):
             'view_mode': 'details',
             'show_image_preview': False,
             'show_text_preview': False,
-            'default_download_path': os.path.join(os.path.expanduser('~'), 'Downloads')
+            'default_download_path': os.path.join(os.path.expanduser('~'), 'Downloads'),
+            'surf_mode': False
         }
         
         self.load_settings()
@@ -523,6 +533,30 @@ class WebCrawler(QMainWindow):
         file_view_container_layout.addWidget(self.icon_view)
         self.file_view_container.setLayout(file_view_container_layout)
         
+        # Web browser view (if available) or fallback text view
+        self.webengine_available = WEBENGINE_AVAILABLE
+        if self.webengine_available:
+            try:
+                self.web_view = QWebEngineView()
+                self.web_view.urlChanged.connect(self.web_url_changed)
+                self.web_view.loadFinished.connect(self.web_load_finished)
+                print("WebEngine initialized successfully")
+            except Exception as e:
+                print(f"WebEngine initialization failed: {e}")
+                # Fall back to text view
+                self.webengine_available = False
+                self.web_view = QTextEdit()
+                self.web_view.setReadOnly(True)
+                self.web_view.setFont(self.custom_font)
+        else:
+            # Fallback to simple text view for HTML content
+            self.web_view = QTextEdit()
+            self.web_view.setReadOnly(True)
+            self.web_view.setFont(self.custom_font)
+        
+        self.web_view.hide()
+        file_view_container_layout.addWidget(self.web_view)
+        
         # Configure table
         header = self.file_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
@@ -611,6 +645,9 @@ class WebCrawler(QMainWindow):
         self.sort_combo.currentTextChanged.connect(self.sort_files)
         self.sort_order_button.clicked.connect(self.toggle_sort_order)
         self.file_table.horizontalHeader().sectionClicked.connect(self.header_clicked)
+        
+        # Initialize surf mode
+        self.update_surf_mode_icon()
 
         self.update_navigation_buttons()
 
@@ -783,6 +820,16 @@ class WebCrawler(QMainWindow):
             self.refresh_action.setText('🔄 Refresh')
         self.refresh_action.triggered.connect(self.refresh_current)
         self.toolbar.addAction(self.refresh_action)
+        
+        self.toolbar.addSeparator()
+        
+        # Surf mode toggle
+        self.surf_mode_action = QAction('Surf Mode', self)
+        self.update_surf_mode_icon()
+        self.surf_mode_action.setCheckable(True)
+        self.surf_mode_action.setChecked(False)
+        self.surf_mode_action.triggered.connect(self.toggle_surf_mode)
+        self.toolbar.addAction(self.surf_mode_action)
 
     def add_to_history(self, url):
         if self.history_index < len(self.history) - 1:
@@ -1088,6 +1135,153 @@ class WebCrawler(QMainWindow):
         # Update view mode
         if 'view_mode' in settings:
             self.set_view_mode(settings['view_mode'])
+        
+        # Update surf mode
+        if 'surf_mode' in settings:
+            self.surf_mode = settings['surf_mode']
+            self.surf_mode_action.setChecked(self.surf_mode)
+            self.update_surf_mode_icon()
+            if self.surf_mode:
+                self.enter_surf_mode()
+            else:
+                self.exit_surf_mode()
+    
+    def update_surf_mode_icon(self):
+        """Update the surf mode icon"""
+        if self.surf_mode:
+            icon_path = os.path.join(self.ui_icons_dir, "toggle-on.png")
+        else:
+            icon_path = os.path.join(self.ui_icons_dir, "toggle-off.png")
+        
+        if os.path.exists(icon_path):
+            self.surf_mode_action.setIcon(QIcon(icon_path))
+        else:
+            # Fallback text
+            self.surf_mode_action.setText("Web" if self.surf_mode else "Files")
+    
+    def toggle_surf_mode(self):
+        """Toggle surf mode on/off"""
+        try:
+            self.surf_mode = self.surf_mode_action.isChecked()
+            self.settings['surf_mode'] = self.surf_mode
+            self.update_surf_mode_icon()
+            
+            if self.surf_mode:
+                self.enter_surf_mode()
+            else:
+                self.exit_surf_mode()
+            
+            self.save_settings()
+        except Exception as e:
+            print(f"Error toggling surf mode: {e}")
+            self.status_bar.showMessage(f"Error toggling surf mode: {e}")
+            # Reset to safe state
+            self.surf_mode = False
+            self.surf_mode_action.setChecked(False)
+            self.settings['surf_mode'] = False
+            self.exit_surf_mode()
+    
+    def enter_surf_mode(self):
+        """Enter web browser mode"""
+        try:
+            # Hide file manager components
+            self.file_table.hide()
+            self.file_list.hide()
+            self.icon_view.hide()
+            
+            # Show web browser
+            self.web_view.show()
+            
+            # Load current URL in web view with error handling
+            if self.webengine_available:
+                try:
+                    # Validate URL before loading
+                    if self.current_url and self.current_url.startswith(('http://', 'https://')):
+                        self.web_view.setUrl(QUrl(self.current_url))
+                    else:
+                        # Fallback to base URL if current URL is invalid
+                        self.web_view.setUrl(QUrl(self.base_url))
+                    self.surf_mode_action.setToolTip("Switch to File Manager mode")
+                    self.status_bar.showMessage("Web browser mode - HTML rendering enabled")
+                except Exception as e:
+                    print(f"WebEngine error: {e}")
+                    self.status_bar.showMessage(f"WebEngine error: {e}")
+                    # Fall back to text mode
+                    self.load_html_as_text(self.current_url)
+            else:
+                # Load HTML content as text
+                self.load_html_as_text(self.current_url)
+                self.surf_mode_action.setToolTip("Switch to File Manager mode (Simple HTML view)")
+                self.status_bar.showMessage("Simple HTML mode - text rendering only")
+        except Exception as e:
+            print(f"Error entering surf mode: {e}")
+            self.status_bar.showMessage(f"Error entering surf mode: {e}")
+            # Force exit surf mode if there's an error
+            self.surf_mode = False
+            self.surf_mode_action.setChecked(False)
+            self.exit_surf_mode()
+    
+    def exit_surf_mode(self):
+        """Exit web browser mode and return to file manager"""
+        # Hide web browser
+        self.web_view.hide()
+        
+        # Show appropriate file manager view based on current view mode
+        if self.view_mode == 'details':
+            self.file_table.show()
+        elif self.view_mode == 'list':
+            self.file_list.show()
+        elif self.view_mode == 'icons':
+            self.icon_view.show()
+        
+        self.surf_mode_action.setToolTip("Switch to Web Browser mode")
+        self.status_bar.showMessage("File manager mode")
+        
+        # Reload current directory to refresh file listing
+        self.load_directory(self.current_url)
+
+    def load_html_as_text(self, url):
+        """Load HTML content as text for fallback mode"""
+        try:
+            if url and url.startswith(('http://', 'https://')):
+                response = requests.get(url, timeout=10)
+                response.raise_for_status()
+                if hasattr(self.web_view, 'setPlainText'):
+                    self.web_view.setPlainText(response.text)
+                else:
+                    # Fallback if web_view doesn't have setPlainText
+                    self.web_view.setHtml(f"<pre>{response.text}</pre>")
+            else:
+                if hasattr(self.web_view, 'setPlainText'):
+                    self.web_view.setPlainText("Invalid URL or empty content")
+                else:
+                    self.web_view.setHtml("<p>Invalid URL or empty content</p>")
+        except Exception as e:
+            error_msg = f"Error loading content: {str(e)}"
+            print(error_msg)
+            if hasattr(self.web_view, 'setPlainText'):
+                self.web_view.setPlainText(error_msg)
+            else:
+                self.web_view.setHtml(f"<p>{error_msg}</p>")
+    
+    def web_url_changed(self, url):
+        """Handle URL changes in web view (WebEngine only)"""
+        if self.surf_mode and self.webengine_available:
+            new_url = url.toString()
+            if new_url != self.current_url:
+                # Update address bar
+                self.url_edit.setText(new_url)
+                self.current_url = new_url
+                # Add to history
+                self.add_to_history(self.current_url)
+    
+    def web_load_finished(self, success):
+        """Handle web page load completion (WebEngine only)"""
+        if self.webengine_available:
+            if success:
+                self.status_bar.showMessage("Page loaded successfully")
+            else:
+                self.status_bar.showMessage("Failed to load page")
     
     def set_view_mode(self, mode):
         """Change the file view mode"""
@@ -1307,20 +1501,45 @@ class WebCrawler(QMainWindow):
         url = self.url_edit.text().strip()
         if url:
             self.add_to_history(self.current_url)
-            self.load_directory(url)
+            if self.surf_mode:
+                # In surf mode, load URL in web view
+                if self.webengine_available:
+                    self.web_view.setUrl(QUrl(url))
+                else:
+                    self.load_html_as_text(url)
+                self.current_url = url
+            else:
+                # In file mode, load as directory listing
+                self.load_directory(url)
 
     def go_back(self):
         if self.history_index > 0:
             self.history_index -= 1
             url = self.history[self.history_index]
-            self.load_directory(url)
+            if self.surf_mode:
+                if self.webengine_available:
+                    self.web_view.setUrl(QUrl(url))
+                else:
+                    self.load_html_as_text(url)
+                self.current_url = url
+                self.url_edit.setText(url)
+            else:
+                self.load_directory(url)
             self.update_navigation_buttons()
 
     def go_forward(self):
         if self.history_index < len(self.history) - 1:
             self.history_index += 1
             url = self.history[self.history_index]
-            self.load_directory(url)
+            if self.surf_mode:
+                if self.webengine_available:
+                    self.web_view.setUrl(QUrl(url))
+                else:
+                    self.load_html_as_text(url)
+                self.current_url = url
+                self.url_edit.setText(url)
+            else:
+                self.load_directory(url)
             self.update_navigation_buttons()
 
     def go_up(self):
@@ -1332,15 +1551,37 @@ class WebCrawler(QMainWindow):
             
             if parent_url.startswith(self.base_url.rstrip('/')):
                 self.add_to_history(self.current_url)
-                self.load_directory(parent_url)
+                if self.surf_mode:
+                    if self.webengine_available:
+                        self.web_view.setUrl(QUrl(parent_url))
+                    else:
+                        self.load_html_as_text(parent_url)
+                    self.current_url = parent_url
+                    self.url_edit.setText(parent_url)
+                else:
+                    self.load_directory(parent_url)
 
     def go_home(self):
         if self.current_url != self.base_url:
             self.add_to_history(self.current_url)
-            self.load_directory(self.base_url)
+            if self.surf_mode:
+                if self.webengine_available:
+                    self.web_view.setUrl(QUrl(self.base_url))
+                else:
+                    self.load_html_as_text(self.base_url)
+                self.current_url = self.base_url
+                self.url_edit.setText(self.base_url)
+            else:
+                self.load_directory(self.base_url)
 
     def refresh_current(self):
-        self.load_directory(self.current_url)
+        if self.surf_mode:
+            if self.webengine_available:
+                self.web_view.reload()
+            else:
+                self.load_html_as_text(self.current_url)
+        else:
+            self.load_directory(self.current_url)
 
     # Event handlers for different views
     def item_double_clicked(self, item):
@@ -1362,7 +1603,33 @@ class WebCrawler(QMainWindow):
         if data and data['type'] == 'directory':
             new_url = urljoin(self.current_url, data['href'])
             self.add_to_history(self.current_url)
-            self.load_directory(new_url)
+            if self.surf_mode:
+                # In surf mode, load in web view
+                if self.webengine_available:
+                    self.web_view.setUrl(QUrl(new_url))
+                else:
+                    self.load_html_as_text(new_url)
+                self.current_url = new_url
+                self.url_edit.setText(new_url)
+            else:
+                # In file mode, load as directory listing
+                self.load_directory(new_url)
+        elif data and data['type'] == 'file':
+            # Handle file clicks based on type and mode
+            if self.is_html_file(data['name']):
+                new_url = urljoin(self.current_url, data['href'])
+                if self.surf_mode:
+                    # In surf mode, render HTML in web view
+                    if self.webengine_available:
+                        self.web_view.setUrl(QUrl(new_url))
+                    else:
+                        self.load_html_as_text(new_url)
+                    self.current_url = new_url
+                    self.url_edit.setText(new_url)
+                else:
+                    # In file mode, treat as navigable directory-like content
+                    self.add_to_history(self.current_url)
+                    self.load_directory(new_url)
 
     def tree_item_clicked(self, item):
         url = item.data(0, Qt.ItemDataRole.UserRole)
