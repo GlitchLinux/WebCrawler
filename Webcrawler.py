@@ -1,0 +1,1528 @@
+#!/usr/bin/env python3
+
+import sys
+import os
+import json
+import requests
+from urllib.parse import urljoin, urlparse, unquote
+from bs4 import BeautifulSoup
+from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
+                             QPushButton, QListWidget, QListWidgetItem, QLabel, 
+                             QLineEdit, QProgressBar, QFileDialog, QMessageBox,
+                             QSplitter, QTextEdit, QFrame, QTreeWidget, QTreeWidgetItem,
+                             QTableWidget, QTableWidgetItem, QHeaderView, QMenuBar,
+                             QMenu, QToolBar, QStatusBar, QMainWindow, QComboBox,
+                             QDialog, QSpinBox, QCheckBox, QGridLayout, QFontDialog,
+                             QScrollArea)
+from PyQt6.QtGui import QIcon, QFont, QPalette, QColor, QAction, QFontDatabase, QPixmap
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize
+
+class SettingsDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_window = parent
+        self.setWindowTitle('WebCrawler Settings')
+        self.setModal(True)
+        self.setMinimumSize(400, 300)
+        self.initUI()
+        
+    def initUI(self):
+        layout = QVBoxLayout()
+        
+        # Font settings
+        font_group = QFrame()
+        font_layout = QGridLayout()
+        
+        font_layout.addWidget(QLabel('Font Family:'), 0, 0)
+        self.font_combo = QComboBox()
+        font_layout.addWidget(self.font_combo, 0, 1)
+        
+        font_layout.addWidget(QLabel('Font Size:'), 1, 0)
+        self.font_size_spin = QSpinBox()
+        self.font_size_spin.setRange(8, 72)
+        self.font_size_spin.setValue(12)
+        font_layout.addWidget(self.font_size_spin, 1, 1)
+        
+        self.font_dialog_button = QPushButton('Choose Font...')
+        self.font_dialog_button.clicked.connect(self.open_font_dialog)
+        font_layout.addWidget(self.font_dialog_button, 2, 0, 1, 2)
+        
+        # Now populate fonts AFTER widgets are created
+        self.populate_fonts()
+        
+        font_group.setLayout(font_layout)
+        layout.addWidget(QLabel('Font Settings'))
+        layout.addWidget(font_group)
+        
+        # View settings
+        view_group = QFrame()
+        view_layout = QVBoxLayout()
+        
+        self.show_tree_check = QCheckBox('Show Directory Tree')
+        self.show_tree_check.setChecked(True)
+        view_layout.addWidget(self.show_tree_check)
+        
+        self.show_info_check = QCheckBox('Show File Information Panel')
+        self.show_info_check.setChecked(True)
+        view_layout.addWidget(self.show_info_check)
+        
+        self.show_toolbar_check = QCheckBox('Show Toolbar')
+        self.show_toolbar_check.setChecked(True)
+        view_layout.addWidget(self.show_toolbar_check)
+        
+        self.show_statusbar_check = QCheckBox('Show Status Bar')
+        self.show_statusbar_check.setChecked(True)
+        view_layout.addWidget(self.show_statusbar_check)
+        
+        view_group.setLayout(view_layout)
+        layout.addWidget(QLabel('View Settings'))
+        layout.addWidget(view_group)
+        
+        # Preview settings
+        preview_group = QFrame()
+        preview_layout = QVBoxLayout()
+        
+        self.show_image_preview_check = QCheckBox('Enable Image Preview')
+        self.show_image_preview_check.setChecked(False)
+        preview_layout.addWidget(self.show_image_preview_check)
+        
+        self.show_text_preview_check = QCheckBox('Enable Text File Preview')
+        self.show_text_preview_check.setChecked(False)
+        preview_layout.addWidget(self.show_text_preview_check)
+        
+        preview_group.setLayout(preview_layout)
+        layout.addWidget(QLabel('Preview Settings'))
+        layout.addWidget(preview_group)
+        
+        # Download settings
+        download_group = QFrame()
+        download_layout = QGridLayout()
+        
+        download_layout.addWidget(QLabel('Default Download Path:'), 0, 0)
+        self.download_path_edit = QLineEdit()
+        self.download_path_edit.setText(os.path.join(os.path.expanduser('~'), 'Downloads'))
+        download_layout.addWidget(self.download_path_edit, 0, 1)
+        
+        self.browse_download_path_button = QPushButton('Browse...')
+        self.browse_download_path_button.clicked.connect(self.browse_download_path)
+        download_layout.addWidget(self.browse_download_path_button, 0, 2)
+        
+        download_group.setLayout(download_layout)
+        layout.addWidget(QLabel('Download Settings'))
+        layout.addWidget(download_group)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        self.apply_button = QPushButton('Apply')
+        self.apply_button.clicked.connect(self.apply_settings)
+        button_layout.addWidget(self.apply_button)
+        
+        self.ok_button = QPushButton('OK')
+        self.ok_button.clicked.connect(self.accept_settings)
+        button_layout.addWidget(self.ok_button)
+        
+        self.cancel_button = QPushButton('Cancel')
+        self.cancel_button.clicked.connect(self.reject)
+        button_layout.addWidget(self.cancel_button)
+        
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
+        
+    def populate_fonts(self):
+        font_db = QFontDatabase
+        families = font_db.families()
+        self.font_combo.addItems(families)
+        
+        # Try to set current font
+        if self.parent_window:
+            current_font = self.parent_window.custom_font
+            index = self.font_combo.findText(current_font.family())
+            if index >= 0:
+                self.font_combo.setCurrentIndex(index)
+            self.font_size_spin.setValue(current_font.pointSize())
+            
+    def open_font_dialog(self):
+        current_font = QFont(self.font_combo.currentText(), self.font_size_spin.value())
+        font, ok = QFontDialog.getFont(current_font, self)
+        if ok:
+            self.font_combo.setCurrentText(font.family())
+            self.font_size_spin.setValue(font.pointSize())
+            
+    def load_settings(self, settings):
+        if 'font_family' in settings:
+            index = self.font_combo.findText(settings['font_family'])
+            if index >= 0:
+                self.font_combo.setCurrentIndex(index)
+        if 'font_size' in settings:
+            self.font_size_spin.setValue(settings['font_size'])
+        if 'show_tree' in settings:
+            self.show_tree_check.setChecked(settings['show_tree'])
+        if 'show_info' in settings:
+            self.show_info_check.setChecked(settings['show_info'])
+        if 'show_toolbar' in settings:
+            self.show_toolbar_check.setChecked(settings['show_toolbar'])
+        if 'show_statusbar' in settings:
+            self.show_statusbar_check.setChecked(settings['show_statusbar'])
+        if 'show_image_preview' in settings:
+            self.show_image_preview_check.setChecked(settings['show_image_preview'])
+        if 'show_text_preview' in settings:
+            self.show_text_preview_check.setChecked(settings['show_text_preview'])
+        if 'default_download_path' in settings:
+            self.download_path_edit.setText(settings['default_download_path'])
+    
+    def browse_download_path(self):
+        """Browse for download directory"""
+        directory = QFileDialog.getExistingDirectory(
+            self, 
+            'Select Download Directory',
+            self.download_path_edit.text()
+        )
+        if directory:
+            self.download_path_edit.setText(directory)
+            
+    def get_settings(self):
+        return {
+            'font_family': self.font_combo.currentText(),
+            'font_size': self.font_size_spin.value(),
+            'show_tree': self.show_tree_check.isChecked(),
+            'show_info': self.show_info_check.isChecked(),
+            'show_toolbar': self.show_toolbar_check.isChecked(),
+            'show_statusbar': self.show_statusbar_check.isChecked(),
+            'show_image_preview': self.show_image_preview_check.isChecked(),
+            'show_text_preview': self.show_text_preview_check.isChecked(),
+            'default_download_path': self.download_path_edit.text()
+        }
+        
+    def apply_settings(self):
+        if self.parent_window:
+            self.parent_window.apply_settings(self.get_settings())
+            
+    def accept_settings(self):
+        self.apply_settings()
+        self.accept()
+
+class DownloadThread(QThread):
+    progress = pyqtSignal(int)
+    finished = pyqtSignal(bool, str)
+    
+    def __init__(self, url, filepath):
+        super().__init__()
+        self.url = url
+        self.filepath = filepath
+        
+    def run(self):
+        try:
+            response = requests.get(self.url, stream=True)
+            response.raise_for_status()
+            
+            total_size = int(response.headers.get('content-length', 0))
+            downloaded = 0
+            
+            with open(self.filepath, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size > 0:
+                            progress_percent = int((downloaded / total_size) * 100)
+                            self.progress.emit(progress_percent)
+                        
+            self.finished.emit(True, f"Downloaded successfully to {self.filepath}")
+        except Exception as e:
+            self.finished.emit(False, f"Download failed: {str(e)}")
+
+class MultiDownloadManager(QThread):
+    file_progress = pyqtSignal(int, int, str)  # file_index, progress_percent, filename
+    overall_progress = pyqtSignal(int, int, str, int)  # completed_files, total_files, current_filename, current_file_percent
+    finished = pyqtSignal(bool, str)
+    
+    def __init__(self, download_items, download_path):
+        super().__init__()
+        self.download_items = download_items  # List of (url, filename) tuples
+        self.download_path = download_path
+        self.completed_files = 0
+        
+    def run(self):
+        try:
+            total_files = len(self.download_items)
+            
+            for i, (url, filename) in enumerate(self.download_items):
+                filepath = os.path.join(self.download_path, filename)
+                
+                # Download file
+                response = requests.get(url, stream=True)
+                response.raise_for_status()
+                
+                total_size = int(response.headers.get('content-length', 0))
+                downloaded = 0
+                
+                with open(filepath, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total_size > 0:
+                                progress_percent = int((downloaded / total_size) * 100)
+                                self.file_progress.emit(i, progress_percent, filename)
+                                self.overall_progress.emit(self.completed_files, total_files, filename, progress_percent)
+                
+                self.completed_files += 1
+            
+            self.finished.emit(True, f"Successfully downloaded {total_files} files")
+            
+        except Exception as e:
+            self.finished.emit(False, f"Download failed: {str(e)}")
+
+class WebCrawler(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.base_url = "https://glitchlinux.wtf/FILES/"
+        self.current_url = self.base_url
+        self.history = []
+        self.history_index = -1
+        self.download_thread = None
+        self.multi_download_manager = None
+        self.current_items = []
+        self.sort_column = 0
+        self.sort_order = Qt.SortOrder.AscendingOrder
+        self.view_mode = 'details'  # 'details' or 'list'
+        
+        # Set up paths for assets
+        self.app_dir = "/usr/local/bin/WebCrawler"
+        self.icons_dir = os.path.join(self.app_dir, "WebCrawler-Icons")
+        self.ui_icons_dir = os.path.join(self.icons_dir, "Webcrawler-UI-actions")
+        self.fonts_dir = os.path.join(self.app_dir, "WebCrawler-fonts")
+        self.settings_file = os.path.join(self.app_dir, "savefile.cfg")
+        
+        # Default settings
+        self.settings = {
+            'font_family': 'FiraCode',
+            'font_size': 12,
+            'show_tree': True,
+            'show_info': True,
+            'show_toolbar': True,
+            'show_statusbar': True,
+            'view_mode': 'details',
+            'show_image_preview': False,
+            'show_text_preview': False,
+            'default_download_path': os.path.join(os.path.expanduser('~'), 'Downloads')
+        }
+        
+        self.load_settings()
+        self.load_custom_font()
+        self.initUI()
+        self.apply_settings(self.settings)
+        self.load_directory(self.current_url)
+
+    def load_settings(self):
+        """Load settings from savefile.cfg"""
+        try:
+            if os.path.exists(self.settings_file):
+                with open(self.settings_file, 'r') as f:
+                    saved_settings = json.load(f)
+                    self.settings.update(saved_settings)
+        except Exception as e:
+            print(f"Error loading settings: {e}")
+    
+    def save_settings(self):
+        """Save settings to savefile.cfg"""
+        try:
+            os.makedirs(self.app_dir, exist_ok=True)
+            with open(self.settings_file, 'w') as f:
+                json.dump(self.settings, f, indent=2)
+        except Exception as e:
+            print(f"Error saving settings: {e}")
+
+    def get_ui_icon(self, icon_name):
+        """Get UI action icon if available"""
+        icon_path = os.path.join(self.ui_icons_dir, f"{icon_name}.png")
+        if os.path.exists(icon_path):
+            return QIcon(icon_path)
+        return None
+
+    def load_custom_font(self):
+        """Load FiraCode font from the fonts directory"""
+        font_path = os.path.join(self.fonts_dir, "FiraCode-Regular.ttf")
+        if os.path.exists(font_path):
+            font_id = QFontDatabase.addApplicationFont(font_path)
+            if font_id != -1:
+                font_families = QFontDatabase.applicationFontFamilies(font_id)
+                if font_families:
+                    self.custom_font = QFont(font_families[0], self.settings['font_size'])
+                    return
+        
+        # Fallback to system font
+        self.custom_font = QFont(self.settings['font_family'], self.settings['font_size'])
+
+    def initUI(self):
+        self.setWindowTitle('WebCrawler - Apache File Index Browser')
+        self.setGeometry(100, 100, 1200, 800)
+
+        # Set the same dark theme as the original script
+        palette = QPalette()
+        palette.setColor(QPalette.ColorRole.Window, QColor(53, 53, 53))
+        palette.setColor(QPalette.ColorRole.WindowText, Qt.GlobalColor.white)
+        palette.setColor(QPalette.ColorRole.Base, QColor(25, 25, 25))
+        palette.setColor(QPalette.ColorRole.AlternateBase, QColor(53, 53, 53))
+        palette.setColor(QPalette.ColorRole.ToolTipBase, Qt.GlobalColor.white)
+        palette.setColor(QPalette.ColorRole.ToolTipText, Qt.GlobalColor.white)
+        palette.setColor(QPalette.ColorRole.Text, Qt.GlobalColor.white)
+        palette.setColor(QPalette.ColorRole.Button, QColor(53, 53, 53))
+        palette.setColor(QPalette.ColorRole.ButtonText, Qt.GlobalColor.white)
+        palette.setColor(QPalette.ColorRole.BrightText, Qt.GlobalColor.red)
+        palette.setColor(QPalette.ColorRole.Link, QColor(42, 130, 218))
+        # Custom selection colors
+        palette.setColor(QPalette.ColorRole.Highlight, QColor(105, 105, 105))  # #696969
+        palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.white)
+        self.setPalette(palette)
+
+        # Create menu bar
+        self.create_menu_bar()
+        
+        # Create toolbar
+        self.create_toolbar()
+        
+        # Central widget
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        main_layout = QVBoxLayout()
+        central_widget.setLayout(main_layout)
+
+        # Address bar
+        address_layout = QHBoxLayout()
+        address_layout.addWidget(QLabel('Location:'))
+        
+        self.url_edit = QLineEdit()
+        self.url_edit.setText(self.current_url)
+        self.url_edit.setFont(QFont('Monospace', 10))
+        address_layout.addWidget(self.url_edit)
+        
+        self.go_button = QPushButton('Go')
+        self.go_button.setMaximumWidth(50)
+        address_layout.addWidget(self.go_button)
+        
+        main_layout.addLayout(address_layout)
+
+        # Main content area with splitter
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        
+        # Left panel with directory tree
+        self.left_panel = QWidget()
+        left_layout = QVBoxLayout()
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        
+        tree_label = QLabel('Directory Tree')
+        tree_label.setFont(QFont('SansSerif', 10, QFont.Weight.Bold))
+        left_layout.addWidget(tree_label)
+        
+        self.directory_tree = QTreeWidget()
+        self.directory_tree.setHeaderLabel('Folders')
+        self.directory_tree.setMaximumWidth(250)
+        self.directory_tree.setMinimumWidth(200)
+        left_layout.addWidget(self.directory_tree)
+        
+        self.left_panel.setLayout(left_layout)
+        self.main_splitter.addWidget(self.left_panel)
+        
+        # Middle panel with file view and info
+        self.middle_splitter = QSplitter(Qt.Orientation.Vertical)
+        
+        # File view area
+        file_view_widget = QWidget()
+        file_view_layout = QVBoxLayout()
+        file_view_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # View controls
+        view_controls_layout = QHBoxLayout()
+        view_controls_layout.addWidget(QLabel('View:'))
+        
+        self.view_combo = QComboBox()
+        self.view_combo.addItems(['Details', 'List', 'Icons'])
+        self.view_combo.setCurrentText('Details')
+        view_controls_layout.addWidget(self.view_combo)
+        
+        view_controls_layout.addStretch()
+        
+        # Sort controls
+        view_controls_layout.addWidget(QLabel('Sort by:'))
+        self.sort_combo = QComboBox()
+        self.sort_combo.addItems(['Name', 'Size', 'Type', 'Modified'])
+        view_controls_layout.addWidget(self.sort_combo)
+        
+        self.sort_order_button = QPushButton()
+        sort_asc_icon = self.get_ui_icon('view-sort-ascending')
+        if sort_asc_icon:
+            self.sort_order_button.setIcon(sort_asc_icon)
+            self.sort_order_button.setText('')
+        else:
+            self.sort_order_button.setText('↑')
+        self.sort_order_button.setMaximumWidth(30)
+        self.sort_order_button.setToolTip('Toggle sort order')
+        view_controls_layout.addWidget(self.sort_order_button)
+        
+        view_controls_layout.addStretch()
+        
+        # Download controls in top right
+        download_controls_layout = QHBoxLayout()
+        
+        self.main_download_button = QPushButton('Download')
+        download_icon = self.get_ui_icon('document-save-as')
+        if download_icon:
+            self.main_download_button.setIcon(download_icon)
+        self.main_download_button.setEnabled(False)
+        self.main_download_button.clicked.connect(self.download_selected_files)
+        download_controls_layout.addWidget(self.main_download_button)
+        
+        self.download_settings_button = QPushButton()
+        gear_icon = self.get_ui_icon('system-run')
+        if gear_icon:
+            self.download_settings_button.setIcon(gear_icon)
+            self.download_settings_button.setText('')
+        else:
+            self.download_settings_button.setText('⚙')
+        self.download_settings_button.setMaximumWidth(30)
+        self.download_settings_button.setToolTip('Download Settings')
+        self.download_settings_button.clicked.connect(self.open_download_settings)
+        download_controls_layout.addWidget(self.download_settings_button)
+        
+        view_controls_layout.addLayout(download_controls_layout)
+        
+        file_view_layout.addLayout(view_controls_layout)
+        
+        # File table/list widget container
+        self.file_view_container = QWidget()
+        file_view_container_layout = QVBoxLayout()
+        file_view_container_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Table view (details)
+        self.file_table = QTableWidget()
+        self.file_table.setColumnCount(4)
+        self.file_table.setHorizontalHeaderLabels(['Name', 'Size', 'Type', 'Modified'])
+        self.file_table.setFont(self.custom_font)
+        
+        # List view (simple list)
+        self.file_list = QListWidget()
+        self.file_list.setFont(self.custom_font)
+        self.file_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)  # Enable multi-selection
+        self.file_list.hide()  # Hidden by default
+        
+        # Icon view (grid with large icons)
+        self.icon_view = QListWidget()
+        self.icon_view.setViewMode(QListWidget.ViewMode.IconMode)
+        self.icon_view.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.icon_view.setGridSize(QSize(80, 80))
+        self.icon_view.setIconSize(QSize(48, 48))
+        self.icon_view.setFont(self.custom_font)
+        self.icon_view.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)  # Enable multi-selection
+        self.icon_view.hide()  # Hidden by default
+        
+        file_view_container_layout.addWidget(self.file_table)
+        file_view_container_layout.addWidget(self.file_list)
+        file_view_container_layout.addWidget(self.icon_view)
+        self.file_view_container.setLayout(file_view_container_layout)
+        
+        # Configure table
+        header = self.file_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        
+        self.file_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.file_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)  # Enable multi-selection
+        self.file_table.setAlternatingRowColors(False)
+        self.file_table.setSortingEnabled(True)
+        
+        file_view_layout.addWidget(self.file_view_container)
+        file_view_widget.setLayout(file_view_layout)
+        self.middle_splitter.addWidget(file_view_widget)
+        
+        # Info panel
+        self.info_widget = QWidget()
+        info_layout = QVBoxLayout()
+        
+        self.info_label = QLabel('File Information')
+        self.info_label.setFont(QFont('SansSerif', 10, QFont.Weight.Bold))
+        info_layout.addWidget(self.info_label)
+        
+        self.info_text = QTextEdit()
+        self.info_text.setReadOnly(True)
+        self.info_text.setFont(QFont('Monospace', 9))
+        info_layout.addWidget(self.info_text)
+        
+        # Download controls
+        download_layout = QHBoxLayout()
+        self.download_button = QPushButton('Download')
+        download_icon = self.get_ui_icon('document-save-as')
+        if download_icon:
+            self.download_button.setIcon(download_icon)
+        self.download_button.setEnabled(False)
+        download_layout.addWidget(self.download_button)
+        
+        self.open_folder_button = QPushButton('Open Download Folder')
+        folder_icon = self.get_ui_icon('folder-new')
+        if folder_icon:
+            self.open_folder_button.setIcon(folder_icon)
+        download_layout.addWidget(self.open_folder_button)
+        download_layout.addStretch()
+        
+        info_layout.addLayout(download_layout)
+        
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        info_layout.addWidget(self.progress_bar)
+        
+        self.info_widget.setLayout(info_layout)
+        self.info_widget.setMaximumHeight(200)
+        self.info_widget.setMinimumHeight(150)
+        self.middle_splitter.addWidget(self.info_widget)
+        
+        self.main_splitter.addWidget(self.middle_splitter)
+        
+        # Set splitter proportions
+        self.main_splitter.setSizes([250, 950])
+        self.middle_splitter.setSizes([600, 200])
+        
+        main_layout.addWidget(self.main_splitter)
+
+        # Status bar
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage('Ready')
+
+        # Connect signals
+        self.go_button.clicked.connect(self.navigate_to_url)
+        self.url_edit.returnPressed.connect(self.navigate_to_url)
+        self.file_table.itemDoubleClicked.connect(self.item_double_clicked)
+        self.file_table.itemSelectionChanged.connect(self.selection_changed)
+        self.file_table.itemSelectionChanged.connect(self.update_download_button_state)
+        self.file_list.itemDoubleClicked.connect(self.list_item_double_clicked)
+        self.file_list.itemSelectionChanged.connect(self.list_selection_changed)
+        self.file_list.itemSelectionChanged.connect(self.update_download_button_state)
+        self.icon_view.itemDoubleClicked.connect(self.icon_item_double_clicked)
+        self.icon_view.itemSelectionChanged.connect(self.icon_selection_changed)
+        self.icon_view.itemSelectionChanged.connect(self.update_download_button_state)
+        self.download_button.clicked.connect(self.download_file)
+        self.open_folder_button.clicked.connect(self.open_download_folder)
+        self.directory_tree.itemClicked.connect(self.tree_item_clicked)
+        self.view_combo.currentTextChanged.connect(self.change_view)
+        self.sort_combo.currentTextChanged.connect(self.sort_files)
+        self.sort_order_button.clicked.connect(self.toggle_sort_order)
+        self.file_table.horizontalHeader().sectionClicked.connect(self.header_clicked)
+
+        self.update_navigation_buttons()
+
+    def create_menu_bar(self):
+        menubar = self.menuBar()
+        
+        # File menu
+        file_menu = menubar.addMenu('File')
+        
+        refresh_action = QAction('Refresh', self)
+        refresh_icon = self.get_ui_icon('view-refresh')
+        if refresh_icon:
+            refresh_action.setIcon(refresh_icon)
+        refresh_action.setShortcut('F5')
+        refresh_action.triggered.connect(self.refresh_current)
+        file_menu.addAction(refresh_action)
+        
+        file_menu.addSeparator()
+        
+        settings_action = QAction('Settings...', self)
+        settings_icon = self.get_ui_icon('system-run')
+        if settings_icon:
+            settings_action.setIcon(settings_icon)
+        settings_action.setShortcut('Ctrl+,')
+        settings_action.triggered.connect(self.open_settings)
+        file_menu.addAction(settings_action)
+        
+        file_menu.addSeparator()
+        
+        exit_action = QAction('Exit', self)
+        exit_icon = self.get_ui_icon('application-exit')
+        if exit_icon:
+            exit_action.setIcon(exit_icon)
+        exit_action.setShortcut('Ctrl+Q')
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+        
+        # View menu
+        view_menu = menubar.addMenu('View')
+        
+        # View mode submenu
+        view_mode_menu = view_menu.addMenu('View Mode')
+        
+        details_action = QAction('Details', self)
+        details_icon = self.get_ui_icon('view-list')
+        if details_icon:
+            details_action.setIcon(details_icon)
+        details_action.setCheckable(True)
+        details_action.setChecked(True)
+        details_action.triggered.connect(lambda: self.set_view_mode('details'))
+        view_mode_menu.addAction(details_action)
+        
+        list_action = QAction('List', self)
+        list_icon = self.get_ui_icon('view-list-bullet')
+        if list_icon:
+            list_action.setIcon(list_icon)
+        list_action.setCheckable(True)
+        list_action.triggered.connect(lambda: self.set_view_mode('list'))
+        view_mode_menu.addAction(list_action)
+        
+        icons_action = QAction('Icons', self)
+        icons_icon = self.get_ui_icon('view-grid')
+        if icons_icon:
+            icons_action.setIcon(icons_icon)
+        icons_action.setCheckable(True)
+        icons_action.triggered.connect(lambda: self.set_view_mode('icons'))
+        view_mode_menu.addAction(icons_action)
+        
+        view_menu.addSeparator()
+        
+        # Panel visibility
+        self.tree_action = QAction('Show Directory Tree', self)
+        tree_icon = self.get_ui_icon('sidebar-show')
+        if tree_icon:
+            self.tree_action.setIcon(tree_icon)
+        self.tree_action.setCheckable(True)
+        self.tree_action.setChecked(True)
+        self.tree_action.triggered.connect(self.toggle_tree_panel)
+        view_menu.addAction(self.tree_action)
+        
+        self.info_action = QAction('Show File Information', self)
+        info_icon = self.get_ui_icon('view-reveal')
+        if info_icon:
+            self.info_action.setIcon(info_icon)
+        self.info_action.setCheckable(True)
+        self.info_action.setChecked(True)
+        self.info_action.triggered.connect(self.toggle_info_panel)
+        view_menu.addAction(self.info_action)
+        
+        self.toolbar_action = QAction('Show Toolbar', self)
+        self.toolbar_action.setCheckable(True)
+        self.toolbar_action.setChecked(True)
+        self.toolbar_action.triggered.connect(self.toggle_toolbar)
+        view_menu.addAction(self.toolbar_action)
+        
+        self.statusbar_action = QAction('Show Status Bar', self)
+        self.statusbar_action.setCheckable(True)
+        self.statusbar_action.setChecked(True)
+        self.statusbar_action.triggered.connect(self.toggle_statusbar)
+        view_menu.addAction(self.statusbar_action)
+        
+        view_menu.addSeparator()
+        
+        home_action = QAction('Home', self)
+        home_icon = self.get_ui_icon('go-home')
+        if home_icon:
+            home_action.setIcon(home_icon)
+        home_action.setShortcut('Ctrl+H')
+        home_action.triggered.connect(self.go_home)
+        view_menu.addAction(home_action)
+        
+        up_action = QAction('Up', self)
+        up_icon = self.get_ui_icon('up')
+        if up_icon:
+            up_action.setIcon(up_icon)
+        up_action.setShortcut('Alt+Up')
+        up_action.triggered.connect(self.go_up)
+        view_menu.addAction(up_action)
+
+    def create_toolbar(self):
+        self.toolbar = self.addToolBar('Navigation')
+        self.toolbar.setMovable(False)
+        
+        # Navigation buttons
+        self.back_action = QAction('Back', self)
+        back_icon = self.get_ui_icon('left')
+        if back_icon:
+            self.back_action.setIcon(back_icon)
+        else:
+            self.back_action.setText('← Back')
+        self.back_action.triggered.connect(self.go_back)
+        self.toolbar.addAction(self.back_action)
+        
+        self.forward_action = QAction('Forward', self)
+        forward_icon = self.get_ui_icon('right')
+        if forward_icon:
+            self.forward_action.setIcon(forward_icon)
+        else:
+            self.forward_action.setText('Forward →')
+        self.forward_action.triggered.connect(self.go_forward)
+        self.toolbar.addAction(self.forward_action)
+        
+        self.toolbar.addSeparator()
+        
+        self.up_action = QAction('Up', self)
+        up_icon = self.get_ui_icon('up')
+        if up_icon:
+            self.up_action.setIcon(up_icon)
+        else:
+            self.up_action.setText('↑ Up')
+        self.up_action.triggered.connect(self.go_up)
+        self.toolbar.addAction(self.up_action)
+        
+        self.home_action = QAction('Home', self)
+        home_icon = self.get_ui_icon('go-home')
+        if home_icon:
+            self.home_action.setIcon(home_icon)
+        else:
+            self.home_action.setText('🏠 Home')
+        self.home_action.triggered.connect(self.go_home)
+        self.toolbar.addAction(self.home_action)
+        
+        self.toolbar.addSeparator()
+        
+        self.refresh_action = QAction('Refresh', self)
+        refresh_icon = self.get_ui_icon('view-refresh')
+        if refresh_icon:
+            self.refresh_action.setIcon(refresh_icon)
+        else:
+            self.refresh_action.setText('🔄 Refresh')
+        self.refresh_action.triggered.connect(self.refresh_current)
+        self.toolbar.addAction(self.refresh_action)
+
+    def add_to_history(self, url):
+        if self.history_index < len(self.history) - 1:
+            self.history = self.history[:self.history_index + 1]
+        
+        self.history.append(url)
+        self.history_index = len(self.history) - 1
+        self.update_navigation_buttons()
+
+    def update_navigation_buttons(self):
+        self.back_action.setEnabled(self.history_index > 0)
+        self.forward_action.setEnabled(self.history_index < len(self.history) - 1)
+
+    def load_directory(self, url):
+        self.status_bar.showMessage('Loading...')
+        self.file_table.setRowCount(0)
+        self.info_text.clear()
+        self.current_items = []
+        
+        try:
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # Find all links in the directory listing
+            links = soup.find_all('a', href=True)
+            
+            for link in links:
+                href = link['href']
+                text = link.get_text().strip()
+                
+                # Skip parent directory link, sorting links, and empty links
+                if href in ['/', '?C=N;O=D', '?C=M;O=A', '?C=S;O=A', '?C=D;O=A'] or not text:
+                    continue
+                
+                # Get additional info from the table row
+                row = link.find_parent('tr')
+                size = ""
+                modified = ""
+                if row:
+                    cells = row.find_all('td')
+                    if len(cells) >= 4:
+                        modified = cells[2].get_text().strip()
+                        size = cells[3].get_text().strip()
+                
+                # Determine if it's a directory or web-navigable file
+                is_directory = href.endswith('/') or '[DIR]' in str(row)
+                is_web_file = not is_directory and self.is_web_navigable_file(text)
+                
+                item_data = {
+                    'type': 'directory' if (is_directory or is_web_file) else 'file',
+                    'href': href,
+                    'name': text,
+                    'size': size if not (is_directory or is_web_file) else '',
+                    'modified': modified,
+                    'is_web_file': is_web_file
+                }
+                
+                self.current_items.append(item_data)
+            
+            self.current_url = url
+            self.url_edit.setText(url)
+            self.populate_file_views()
+            self.update_directory_tree()
+            self.status_bar.showMessage(f'Loaded {len(self.current_items)} items')
+            
+        except requests.RequestException as e:
+            self.status_bar.showMessage(f'Error: {str(e)}')
+            QMessageBox.warning(self, 'Error', f'Failed to load directory:\n{str(e)}')
+
+    def get_file_icon(self, filename, is_directory=False, is_web_file=False):
+        """Get appropriate icon for file type"""
+        if is_directory or is_web_file:
+            if is_web_file:
+                # Use web/internet icon for web files if available
+                web_icon_path = os.path.join(self.icons_dir, "internet.png")
+                if os.path.exists(web_icon_path):
+                    return QIcon(web_icon_path)
+            
+            # Default folder icon
+            folder_icon_path = os.path.join(self.icons_dir, "folder.png")
+            if os.path.exists(folder_icon_path):
+                return QIcon(folder_icon_path)
+            return QIcon('/usr/share/icons/folder.png')  # Fallback
+        
+        # Get file extension
+        _, ext = os.path.splitext(filename.lower())
+        ext = ext.lstrip('.')  # Remove the dot
+        
+        # Special cases for compound extensions
+        if filename.lower().endswith('.tar.gz'):
+            ext = 'tar'
+        elif filename.lower().endswith('.tar.xz'):
+            ext = 'tar'
+        elif filename.lower().endswith('.tar.lzma'):
+            ext = 'tar.lzma'
+        
+        # Look for PNG icons first (they work better)
+        png_icon_path = os.path.join(self.icons_dir, f"{ext}.png")
+        if os.path.exists(png_icon_path):
+            return QIcon(png_icon_path)
+        
+        # Fallback icons for common types
+        fallback_map = {
+            'txt': 'txt.png',
+            'py': 'py.png',
+            'sh': 'sh.png',
+            'json': 'json.png',
+            'xml': 'xml.png',
+            'yaml': 'yaml.png',
+            'yml': 'yaml.png',
+            'mp3': 'mp3.png',
+            'mp4': 'mp4.png',
+            'pdf': 'pdf.png',
+            'iso': 'iso.png',
+            'img': 'img.png',
+            'deb': 'deb.png',
+            'tar': 'tar.png',
+            'gz': 'gzip.png',
+            'xz': 'xz.png',
+            '7z': '7z.png',
+            'zip': 'application-x-tar.png',
+            'vhd': 'vhd.png',
+            'vdi': 'vdi.png',
+            'appimage': 'appimage.png',
+            'apk': 'apk.png',
+            'cfg': 'cfg.png',
+            'efi': 'efi.png',
+            'java': 'java.png',
+            'pgp': 'pgp.png'
+        }
+        
+        if ext in fallback_map:
+            fallback_path = os.path.join(self.icons_dir, fallback_map[ext])
+            if os.path.exists(fallback_path):
+                return QIcon(fallback_path)
+        
+        # Default unknown file icon
+        unknown_path = os.path.join(self.icons_dir, "unknown.png")
+        if os.path.exists(unknown_path):
+            return QIcon(unknown_path)
+        
+        return None
+
+    def populate_file_views(self):
+        """Populate all file views with current items"""
+        self.populate_file_table()
+        self.populate_file_list()
+        self.populate_icon_view()
+
+    def populate_file_table(self):
+        # Sort items
+        self.sort_items()
+        
+        self.file_table.setRowCount(len(self.current_items))
+        
+        for row, item in enumerate(self.current_items):
+            # Name column with icon
+            name_item = QTableWidgetItem()
+            
+            # Get appropriate icon
+            is_web_file = item.get('is_web_file', False)
+            icon = self.get_file_icon(item['name'], item['type'] == 'directory', is_web_file)
+            if icon:
+                name_item.setIcon(icon)
+            
+            name_item.setText(item['name'])
+            name_item.setData(Qt.ItemDataRole.UserRole, item)
+            self.file_table.setItem(row, 0, name_item)
+            
+            # Size column
+            size_item = QTableWidgetItem(item['size'])
+            self.file_table.setItem(row, 1, size_item)
+            
+            # Type column
+            type_item = QTableWidgetItem(item['type'].title())
+            self.file_table.setItem(row, 2, type_item)
+            
+            # Modified column
+            modified_item = QTableWidgetItem(item['modified'])
+            self.file_table.setItem(row, 3, modified_item)
+
+    def populate_file_list(self):
+        """Populate the simple list view"""
+        self.sort_items()
+        self.file_list.clear()
+        
+        for item in self.current_items:
+            list_item = QListWidgetItem()
+            is_web_file = item.get('is_web_file', False)
+            icon = self.get_file_icon(item['name'], item['type'] == 'directory', is_web_file)
+            if icon:
+                list_item.setIcon(icon)
+            list_item.setText(item['name'])
+            list_item.setData(Qt.ItemDataRole.UserRole, item)
+            self.file_list.addItem(list_item)
+    
+    def populate_icon_view(self):
+        """Populate the icon grid view"""
+        self.sort_items()
+        self.icon_view.clear()
+        
+        for item in self.current_items:
+            icon_item = QListWidgetItem()
+            is_web_file = item.get('is_web_file', False)
+            icon = self.get_file_icon(item['name'], item['type'] == 'directory', is_web_file)
+            if icon:
+                icon_item.setIcon(icon)
+            icon_item.setText(item['name'])
+            icon_item.setData(Qt.ItemDataRole.UserRole, item)
+            self.icon_view.addItem(icon_item)
+
+    def sort_items(self):
+        sort_key_map = {
+            'Name': lambda x: x['name'].lower(),
+            'Size': lambda x: self.parse_size(x['size']),
+            'Type': lambda x: (x['type'] == 'file', x['name'].lower()),  # Directories first
+            'Modified': lambda x: x['modified']
+        }
+        
+        sort_key = self.sort_combo.currentText()
+        if sort_key in sort_key_map:
+            reverse = self.sort_order == Qt.SortOrder.DescendingOrder
+            self.current_items.sort(key=sort_key_map[sort_key], reverse=reverse)
+
+    def parse_size(self, size_str):
+        if not size_str or size_str == '-':
+            return 0
+        
+        # Parse size strings like "1.2M", "345K", "2.1G"
+        size_str = size_str.strip()
+        if size_str[-1].upper() in 'KMGT':
+            multipliers = {'K': 1024, 'M': 1024**2, 'G': 1024**3, 'T': 1024**4}
+            try:
+                return float(size_str[:-1]) * multipliers[size_str[-1].upper()]
+            except:
+                return 0
+        try:
+            return float(size_str)
+        except:
+            return 0
+
+    def update_directory_tree(self):
+        # Simple tree update - could be enhanced to show full tree structure
+        self.directory_tree.clear()
+        
+        # Add current path components
+        path_parts = self.current_url.replace(self.base_url, '').strip('/').split('/')
+        if path_parts == ['']:
+            path_parts = []
+        
+        root_item = QTreeWidgetItem(self.directory_tree)
+        root_item.setText(0, 'FILES')
+        root_item.setData(0, Qt.ItemDataRole.UserRole, self.base_url)
+        
+        current_item = root_item
+        current_url = self.base_url
+        
+        for part in path_parts:
+            if part:
+                current_url = urljoin(current_url, part + '/')
+                child_item = QTreeWidgetItem(current_item)
+                child_item.setText(0, part)
+                child_item.setData(0, Qt.ItemDataRole.UserRole, current_url)
+                current_item = child_item
+        
+        self.directory_tree.expandAll()
+        if current_item:
+            self.directory_tree.setCurrentItem(current_item)
+
+    # Settings and UI control methods
+    def open_settings(self):
+        """Open the settings dialog"""
+        dialog = SettingsDialog(self)
+        dialog.load_settings(self.settings)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.settings.update(dialog.get_settings())
+            self.save_settings()
+            self.apply_settings(self.settings)
+    
+    def apply_settings(self, settings):
+        """Apply settings to the UI"""
+        # Update font
+        self.custom_font = QFont(settings['font_family'], settings['font_size'])
+        self.file_table.setFont(self.custom_font)
+        self.file_list.setFont(self.custom_font)
+        self.icon_view.setFont(self.custom_font)
+        
+        # Update UI visibility
+        self.left_panel.setVisible(settings['show_tree'])
+        self.tree_action.setChecked(settings['show_tree'])
+        
+        self.info_widget.setVisible(settings['show_info'])
+        self.info_action.setChecked(settings['show_info'])
+        
+        self.toolbar.setVisible(settings['show_toolbar'])
+        self.toolbar_action.setChecked(settings['show_toolbar'])
+        
+        self.status_bar.setVisible(settings['show_statusbar'])
+        self.statusbar_action.setChecked(settings['show_statusbar'])
+        
+        # Update view mode
+        if 'view_mode' in settings:
+            self.set_view_mode(settings['view_mode'])
+    
+    def set_view_mode(self, mode):
+        """Change the file view mode"""
+        self.view_mode = mode
+        self.settings['view_mode'] = mode
+        
+        # Hide all views
+        self.file_table.hide()
+        self.file_list.hide()
+        self.icon_view.hide()
+        
+        # Show selected view
+        if mode == 'details':
+            self.file_table.show()
+            self.view_combo.setCurrentText('Details')
+        elif mode == 'list':
+            self.file_list.show()
+            self.view_combo.setCurrentText('List')
+        elif mode == 'icons':
+            self.icon_view.show()
+            self.view_combo.setCurrentText('Icons')
+        
+        self.save_settings()
+    
+    def toggle_tree_panel(self):
+        """Toggle directory tree visibility"""
+        visible = not self.left_panel.isVisible()
+        self.left_panel.setVisible(visible)
+        self.tree_action.setChecked(visible)
+        self.settings['show_tree'] = visible
+        self.save_settings()
+    
+    def toggle_info_panel(self):
+        """Toggle file info panel visibility"""
+        visible = not self.info_widget.isVisible()
+        self.info_widget.setVisible(visible)
+        self.info_action.setChecked(visible)
+        self.settings['show_info'] = visible
+        self.save_settings()
+    
+    def toggle_toolbar(self):
+        """Toggle toolbar visibility"""
+        visible = not self.toolbar.isVisible()
+        self.toolbar.setVisible(visible)
+        self.toolbar_action.setChecked(visible)
+        self.settings['show_toolbar'] = visible
+        self.save_settings()
+    
+    def toggle_statusbar(self):
+        """Toggle status bar visibility"""
+        visible = not self.status_bar.isVisible()
+        self.status_bar.setVisible(visible)
+        self.statusbar_action.setChecked(visible)
+        self.settings['show_statusbar'] = visible
+        self.save_settings()
+
+    # Download functionality
+    def update_download_button_state(self):
+        """Update download button enabled state based on selection"""
+        has_files_selected = self.get_selected_files() is not None
+        self.main_download_button.setEnabled(has_files_selected)
+    
+    def get_selected_files(self):
+        """Get list of selected file items"""
+        selected_files = []
+        
+        if self.file_table.isVisible():
+            selected_rows = set()
+            for item in self.file_table.selectedItems():
+                selected_rows.add(item.row())
+            
+            for row in selected_rows:
+                name_item = self.file_table.item(row, 0)
+                if name_item:
+                    data = name_item.data(Qt.ItemDataRole.UserRole)
+                    if data and data['type'] == 'file':
+                        selected_files.append(data)
+                        
+        elif self.file_list.isVisible():
+            for item in self.file_list.selectedItems():
+                data = item.data(Qt.ItemDataRole.UserRole)
+                if data and data['type'] == 'file':
+                    selected_files.append(data)
+                    
+        elif self.icon_view.isVisible():
+            for item in self.icon_view.selectedItems():
+                data = item.data(Qt.ItemDataRole.UserRole)
+                if data and data['type'] == 'file':
+                    selected_files.append(data)
+        
+        return selected_files if selected_files else None
+    
+    def open_download_settings(self):
+        """Open download settings dialog"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Download Settings')
+        dialog.setModal(True)
+        dialog.setMinimumSize(400, 150)
+        
+        layout = QVBoxLayout()
+        
+        # Download path setting
+        path_layout = QGridLayout()
+        path_layout.addWidget(QLabel('Default Download Path:'), 0, 0)
+        
+        path_edit = QLineEdit()
+        path_edit.setText(self.settings.get('default_download_path', 
+                         os.path.join(os.path.expanduser('~'), 'Downloads')))
+        path_layout.addWidget(path_edit, 0, 1)
+        
+        browse_button = QPushButton('Browse...')
+        def browse_path():
+            directory = QFileDialog.getExistingDirectory(dialog, 'Select Download Directory', path_edit.text())
+            if directory:
+                path_edit.setText(directory)
+        browse_button.clicked.connect(browse_path)
+        path_layout.addWidget(browse_button, 0, 2)
+        
+        layout.addLayout(path_layout)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        ok_button = QPushButton('OK')
+        def accept_settings():
+            self.settings['default_download_path'] = path_edit.text()
+            self.save_settings()
+            dialog.accept()
+        ok_button.clicked.connect(accept_settings)
+        button_layout.addWidget(ok_button)
+        
+        cancel_button = QPushButton('Cancel')
+        cancel_button.clicked.connect(dialog.reject)
+        button_layout.addWidget(cancel_button)
+        
+        layout.addLayout(button_layout)
+        dialog.setLayout(layout)
+        dialog.exec()
+    
+    def download_selected_files(self):
+        """Download all selected files"""
+        selected_files = self.get_selected_files()
+        if not selected_files:
+            return
+        
+        download_path = self.settings.get('default_download_path', 
+                                        os.path.join(os.path.expanduser('~'), 'Downloads'))
+        
+        # Ensure download directory exists
+        os.makedirs(download_path, exist_ok=True)
+        
+        # Prepare download items
+        download_items = []
+        for file_data in selected_files:
+            url = urljoin(self.current_url, file_data['href'])
+            filename = unquote(file_data['name'])
+            download_items.append((url, filename))
+        
+        # Show status bar if hidden
+        if not self.status_bar.isVisible():
+            self.status_bar.setVisible(True)
+            self.statusbar_action.setChecked(True)
+            self.settings['show_statusbar'] = True
+            self.save_settings()
+        
+        # Start multi-file download
+        self.multi_download_manager = MultiDownloadManager(download_items, download_path)
+        self.multi_download_manager.file_progress.connect(self.update_file_progress)
+        self.multi_download_manager.overall_progress.connect(self.update_overall_progress)
+        self.multi_download_manager.finished.connect(self.multi_download_finished)
+        self.multi_download_manager.start()
+        
+        # Disable download button during download
+        self.main_download_button.setEnabled(False)
+    
+    def update_file_progress(self, file_index, progress_percent, filename):
+        """Update individual file download progress"""
+        pass
+    
+    def update_overall_progress(self, completed_files, total_files, current_filename, current_file_percent):
+        """Update overall download progress in status bar"""
+        if total_files > 1:
+            self.status_bar.showMessage(
+                f"{completed_files + 1}/{total_files} files | {current_filename} - {current_file_percent}%"
+            )
+        else:
+            self.status_bar.showMessage(f"Downloading {current_filename} - {current_file_percent}%")
+    
+    def multi_download_finished(self, success, message):
+        """Handle completion of multi-file download"""
+        self.main_download_button.setEnabled(True)
+        self.status_bar.showMessage(message)
+        
+        if success:
+            QMessageBox.information(self, 'Download Complete', message)
+        else:
+            QMessageBox.warning(self, 'Download Failed', message)
+        
+        # Re-enable download button based on current selection
+        self.update_download_button_state()
+
+    # File type detection
+    def is_web_navigable_file(self, filename):
+        """Check if file should be treated as navigable web content"""
+        web_extensions = {'.html', '.htm', '.php', '.asp', '.aspx', '.jsp', '.cgi'}
+        _, ext = os.path.splitext(filename.lower())
+        return ext in web_extensions
+
+    def is_html_file(self, filename):
+        """Check if file is an HTML file"""
+        html_extensions = {'.html', '.htm', '.php', '.asp', '.aspx', '.jsp', '.cgi'}
+        _, ext = os.path.splitext(filename.lower())
+        return ext in html_extensions
+
+    # Navigation methods
+    def navigate_to_url(self):
+        url = self.url_edit.text().strip()
+        if url:
+            self.add_to_history(self.current_url)
+            self.load_directory(url)
+
+    def go_back(self):
+        if self.history_index > 0:
+            self.history_index -= 1
+            url = self.history[self.history_index]
+            self.load_directory(url)
+            self.update_navigation_buttons()
+
+    def go_forward(self):
+        if self.history_index < len(self.history) - 1:
+            self.history_index += 1
+            url = self.history[self.history_index]
+            self.load_directory(url)
+            self.update_navigation_buttons()
+
+    def go_up(self):
+        if self.current_url != self.base_url:
+            if self.current_url.endswith('/'):
+                parent_url = '/'.join(self.current_url.rstrip('/').split('/')[:-1]) + '/'
+            else:
+                parent_url = '/'.join(self.current_url.split('/')[:-1]) + '/'
+            
+            if parent_url.startswith(self.base_url.rstrip('/')):
+                self.add_to_history(self.current_url)
+                self.load_directory(parent_url)
+
+    def go_home(self):
+        if self.current_url != self.base_url:
+            self.add_to_history(self.current_url)
+            self.load_directory(self.base_url)
+
+    def refresh_current(self):
+        self.load_directory(self.current_url)
+
+    # Event handlers for different views
+    def item_double_clicked(self, item):
+        data = item.data(Qt.ItemDataRole.UserRole)
+        self.handle_item_action(data)
+
+    def list_item_double_clicked(self, item):
+        """Handle double-click in list view"""
+        data = item.data(Qt.ItemDataRole.UserRole)
+        self.handle_item_action(data)
+    
+    def icon_item_double_clicked(self, item):
+        """Handle double-click in icon view"""
+        data = item.data(Qt.ItemDataRole.UserRole)
+        self.handle_item_action(data)
+    
+    def handle_item_action(self, data):
+        """Handle double-click action on any item"""
+        if data and data['type'] == 'directory':
+            new_url = urljoin(self.current_url, data['href'])
+            self.add_to_history(self.current_url)
+            self.load_directory(new_url)
+
+    def tree_item_clicked(self, item):
+        url = item.data(0, Qt.ItemDataRole.UserRole)
+        if url and url != self.current_url:
+            self.add_to_history(self.current_url)
+            self.load_directory(url)
+
+    def selection_changed(self):
+        selected_items = self.file_table.selectedItems()
+        if selected_items:
+            # Get the first column item which contains our data
+            row = selected_items[0].row()
+            name_item = self.file_table.item(row, 0)
+            data = name_item.data(Qt.ItemDataRole.UserRole)
+            self.update_info_panel(data)
+        else:
+            self.clear_info_panel()
+
+    def list_selection_changed(self):
+        """Handle selection change in list view"""
+        selected_items = self.file_list.selectedItems()
+        if selected_items:
+            data = selected_items[0].data(Qt.ItemDataRole.UserRole)
+            self.update_info_panel(data)
+        else:
+            self.clear_info_panel()
+    
+    def icon_selection_changed(self):
+        """Handle selection change in icon view"""
+        selected_items = self.icon_view.selectedItems()
+        if selected_items:
+            data = selected_items[0].data(Qt.ItemDataRole.UserRole)
+            self.update_info_panel(data)
+        else:
+            self.clear_info_panel()
+    
+    def update_info_panel(self, data):
+        """Update the file information panel"""
+        info_text = f"Name: {data['name']}\n"
+        info_text += f"Type: {data['type'].title()}\n"
+        if data['size']:
+            info_text += f"Size: {data['size']}\n"
+        if data['modified']:
+            info_text += f"Modified: {data['modified']}\n"
+        info_text += f"URL: {urljoin(self.current_url, data['href'])}"
+        
+        self.info_text.setPlainText(info_text)
+        self.download_button.setEnabled(data['type'] == 'file')
+    
+    def clear_info_panel(self):
+        """Clear the file information panel"""
+        self.info_text.clear()
+        self.download_button.setEnabled(False)
+
+    def change_view(self, view_type):
+        """Handle view mode change from combo box"""
+        if view_type == 'Details':
+            self.set_view_mode('details')
+        elif view_type == 'List':
+            self.set_view_mode('list')
+        elif view_type == 'Icons':
+            self.set_view_mode('icons')
+
+    def sort_files(self):
+        self.populate_file_views()
+
+    def toggle_sort_order(self):
+        if self.sort_order == Qt.SortOrder.AscendingOrder:
+            self.sort_order = Qt.SortOrder.DescendingOrder
+            sort_desc_icon = self.get_ui_icon('view-sort-descending')
+            if sort_desc_icon:
+                self.sort_order_button.setIcon(sort_desc_icon)
+                self.sort_order_button.setText('')
+            else:
+                self.sort_order_button.setText('↓')
+        else:
+            self.sort_order = Qt.SortOrder.AscendingOrder
+            sort_asc_icon = self.get_ui_icon('view-sort-ascending')
+            if sort_asc_icon:
+                self.sort_order_button.setIcon(sort_asc_icon)
+                self.sort_order_button.setText('')
+            else:
+                self.sort_order_button.setText('↑')
+        self.populate_file_views()
+
+    def header_clicked(self, logical_index):
+        columns = ['Name', 'Size', 'Type', 'Modified']
+        if logical_index < len(columns):
+            self.sort_combo.setCurrentText(columns[logical_index])
+            self.sort_files()
+
+    def download_file(self):
+        # Get selected item from the currently visible view
+        data = None
+        if self.file_table.isVisible():
+            selected_items = self.file_table.selectedItems()
+            if selected_items:
+                row = selected_items[0].row()
+                name_item = self.file_table.item(row, 0)
+                data = name_item.data(Qt.ItemDataRole.UserRole)
+        elif self.file_list.isVisible():
+            selected_items = self.file_list.selectedItems()
+            if selected_items:
+                data = selected_items[0].data(Qt.ItemDataRole.UserRole)
+        elif self.icon_view.isVisible():
+            selected_items = self.icon_view.selectedItems()
+            if selected_items:
+                data = selected_items[0].data(Qt.ItemDataRole.UserRole)
+        
+        if not data or data['type'] != 'file':
+            return
+        
+        file_url = urljoin(self.current_url, data['href'])
+        filename = unquote(data['name'])
+        
+        save_path, _ = QFileDialog.getSaveFileName(
+            self, 
+            'Save File', 
+            os.path.join(os.path.expanduser('~'), 'Downloads', filename),
+            'All Files (*)'
+        )
+        
+        if save_path:
+            self.start_download(file_url, save_path)
+
+    def start_download(self, url, filepath):
+        self.download_button.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.status_bar.showMessage(f'Downloading {os.path.basename(filepath)}...')
+        
+        self.download_thread = DownloadThread(url, filepath)
+        self.download_thread.progress.connect(self.update_download_progress)
+        self.download_thread.finished.connect(self.download_finished)
+        self.download_thread.start()
+
+    def update_download_progress(self, progress):
+        self.progress_bar.setValue(progress)
+
+    def download_finished(self, success, message):
+        self.download_button.setEnabled(True)
+        self.progress_bar.setVisible(False)
+        self.status_bar.showMessage(message)
+        
+        if success:
+            QMessageBox.information(self, 'Download Complete', message)
+        else:
+            QMessageBox.warning(self, 'Download Failed', message)
+
+    def open_download_folder(self):
+        download_path = os.path.join(os.path.expanduser('~'), 'Downloads')
+        os.system(f'xdg-open "{download_path}"')
+    
+    def closeEvent(self, event):
+        """Save settings when closing the application"""
+        self.save_settings()
+        event.accept()
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    browser = WebCrawler()
+    browser.show()
+    sys.exit(app.exec())
