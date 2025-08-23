@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
 
+import os
+import gi
+
+# Set GTK theme to dark
+os.environ['GTK_THEME'] = 'Orchis:dark'
+
+# Now, you can use GTK for your GUI
+gi.require_version('Gtk', '3.0')
+from gi.repository import Gtk
+
 import sys
 import os
 import json
@@ -294,7 +304,7 @@ class WebCrawler(QMainWindow):
         self.current_items = []
         self.sort_column = 0
         self.sort_order = Qt.SortOrder.AscendingOrder
-        self.view_mode = 'details'  # 'details' or 'list'
+        self.view_mode = 'list'  # Default to list view instead of details
         self.surf_mode = False  # Toggle for web browser mode
         
         # Set up paths for assets
@@ -312,18 +322,39 @@ class WebCrawler(QMainWindow):
             'show_info': True,
             'show_toolbar': True,
             'show_statusbar': True,
-            'view_mode': 'details',
+            'view_mode': 'list',
             'show_image_preview': False,
             'show_text_preview': False,
             'default_download_path': os.path.join(os.path.expanduser('~'), 'Downloads'),
-            'surf_mode': False
+            'surf_mode': False,
+            'bookmarks': []
         }
+        
+        # Search functionality
+        self.search_active = False
+        self.search_results = []
+        self.current_search_index = -1
         
         self.load_settings()
         self.load_custom_font()
         self.initUI()
         self.apply_settings(self.settings)
-        self.load_directory(self.current_url)
+        
+        # Load start page or default homepage
+        start_page_url = self.get_start_page_url()
+        if start_page_url:
+            self.current_url = start_page_url
+            self.url_edit.setText(start_page_url)
+            if self.surf_mode:
+                if self.webengine_available:
+                    self.web_view.setUrl(QUrl(start_page_url))
+                else:
+                    self.load_html_as_text(start_page_url)
+            else:
+                self.load_directory(start_page_url)
+        else:
+            # Load default homepage
+            self.load_directory(self.current_url)
 
     def load_settings(self):
         """Load settings from savefile.cfg"""
@@ -450,7 +481,7 @@ class WebCrawler(QMainWindow):
         
         self.view_combo = QComboBox()
         self.view_combo.addItems(['Details', 'List', 'Icons'])
-        self.view_combo.setCurrentText('Details')
+        self.view_combo.setCurrentText('List')
         view_controls_layout.addWidget(self.view_combo)
         
         view_controls_layout.addStretch()
@@ -511,12 +542,13 @@ class WebCrawler(QMainWindow):
         self.file_table.setColumnCount(4)
         self.file_table.setHorizontalHeaderLabels(['Name', 'Size', 'Type', 'Modified'])
         self.file_table.setFont(self.custom_font)
+        self.file_table.hide()  # Hide by default - list view is default
         
-        # List view (simple list)
+        # List view (simple list) - now default
         self.file_list = QListWidget()
         self.file_list.setFont(self.custom_font)
         self.file_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)  # Enable multi-selection
-        self.file_list.hide()  # Hidden by default
+        # self.file_list.hide()  # Don't hide - this is the default view
         
         # Icon view (grid with large icons)
         self.icon_view = QListWidget()
@@ -623,11 +655,88 @@ class WebCrawler(QMainWindow):
         
         self.main_splitter.addWidget(self.middle_splitter)
         
+        # Text preview panel (initially hidden)
+        self.text_preview_panel = QWidget()
+        text_preview_layout = QVBoxLayout()
+        text_preview_layout.setContentsMargins(0, 0, 0, 0)
+        
+        text_preview_label = QLabel('Text Preview')
+        text_preview_label.setFont(QFont('SansSerif', 10, QFont.Weight.Bold))
+        text_preview_layout.addWidget(text_preview_label)
+        
+        self.text_preview = QTextEdit()
+        self.text_preview.setReadOnly(True)
+        self.text_preview.setFont(self.custom_font)
+        # Set dark background with white text for preview
+        preview_palette = QPalette()
+        preview_palette.setColor(QPalette.ColorRole.Base, QColor(25, 25, 25))
+        preview_palette.setColor(QPalette.ColorRole.Text, Qt.GlobalColor.white)
+        self.text_preview.setPalette(preview_palette)
+        text_preview_layout.addWidget(self.text_preview)
+        
+        self.text_preview_panel.setLayout(text_preview_layout)
+        self.text_preview_panel.hide()
+        self.main_splitter.addWidget(self.text_preview_panel)
+        
         # Set splitter proportions
-        self.main_splitter.setSizes([250, 950])
+        self.main_splitter.setSizes([250, 950, 0])  # Third panel hidden initially
         self.middle_splitter.setSizes([600, 200])
         
         main_layout.addWidget(self.main_splitter)
+        
+        # Image preview overlay (initially hidden)
+        self.image_preview_overlay = QWidget(self)
+        self.image_preview_overlay.setStyleSheet("""
+            QWidget {
+                background-color: rgba(53, 53, 53, 240);
+                border: 2px solid #555;
+                border-radius: 8px;
+            }
+        """)
+        
+        overlay_layout = QVBoxLayout()
+        overlay_layout.setContentsMargins(5, 5, 5, 5)
+        
+        # Image preview header
+        image_header_layout = QHBoxLayout()
+        self.image_preview_label = QLabel('Image Preview')
+        self.image_preview_label.setFont(QFont('SansSerif', 9, QFont.Weight.Bold))
+        self.image_preview_label.setStyleSheet("color: white;")
+        image_header_layout.addWidget(self.image_preview_label)
+        
+        # Close button for image preview
+        self.close_image_preview_btn = QPushButton('×')
+        self.close_image_preview_btn.setMaximumSize(20, 20)
+        self.close_image_preview_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #666;
+                color: white;
+                border: none;
+                border-radius: 10px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #888;
+            }
+        """)
+        self.close_image_preview_btn.clicked.connect(self.hide_image_preview)
+        image_header_layout.addWidget(self.close_image_preview_btn)
+        
+        overlay_layout.addLayout(image_header_layout)
+        
+        # Scrollable image container
+        self.image_scroll = QScrollArea()
+        self.image_scroll.setWidgetResizable(True)
+        self.image_scroll.setStyleSheet("QScrollArea { border: none; }")
+        
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setStyleSheet("QLabel { background-color: black; }")
+        self.image_scroll.setWidget(self.image_label)
+        
+        overlay_layout.addWidget(self.image_scroll)
+        self.image_preview_overlay.setLayout(overlay_layout)
+        self.image_preview_overlay.hide()
 
         # Status bar
         self.status_bar = QStatusBar()
@@ -656,6 +765,7 @@ class WebCrawler(QMainWindow):
         
         # Initialize surf mode
         self.update_surf_mode_icon()
+        self.update_bookmarks_visibility()
 
         self.update_navigation_buttons()
 
@@ -774,6 +884,52 @@ class WebCrawler(QMainWindow):
         up_action.setShortcut('Alt+Up')
         up_action.triggered.connect(self.go_up)
         view_menu.addAction(up_action)
+        
+        view_menu.addSeparator()
+        
+        # Preview toggles
+        self.image_preview_action = QAction('Enable Image Preview', self)
+        preview_icon = self.get_ui_icon('view-reveal')
+        if preview_icon:
+            self.image_preview_action.setIcon(preview_icon)
+        self.image_preview_action.setCheckable(True)
+        self.image_preview_action.setChecked(False)
+        self.image_preview_action.triggered.connect(self.toggle_image_preview)
+        view_menu.addAction(self.image_preview_action)
+        
+        self.text_preview_action = QAction('Enable Text Preview', self)
+        text_icon = self.get_ui_icon('view-paged')
+        if text_icon:
+            self.text_preview_action.setIcon(text_icon)
+        self.text_preview_action.setCheckable(True)
+        self.text_preview_action.setChecked(False)
+        self.text_preview_action.triggered.connect(self.toggle_text_preview)
+        view_menu.addAction(self.text_preview_action)
+        
+        view_menu.addSeparator()
+        
+        # Search menu
+        search_menu_action = QAction('Search', self)
+        search_icon = self.get_ui_icon('search')
+        if search_icon:
+            search_menu_action.setIcon(search_icon)
+        search_menu_action.setShortcut('Ctrl+F')
+        search_menu_action.triggered.connect(self.toggle_search)
+        view_menu.addAction(search_menu_action)
+        
+        # Navigation menu
+        nav_menu = menubar.addMenu('Navigation')
+        
+        # Add bookmark action
+        add_bookmark_menu_action = QAction('Add Bookmark', self)
+        add_bookmark_menu_action.setShortcut('Ctrl+D')
+        add_bookmark_menu_action.triggered.connect(self.add_current_bookmark)
+        nav_menu.addAction(add_bookmark_menu_action)
+        
+        manage_bookmarks_menu_action = QAction('Manage Bookmarks', self)
+        manage_bookmarks_menu_action.setShortcut('Ctrl+Shift+B')
+        manage_bookmarks_menu_action.triggered.connect(self.manage_bookmarks)
+        nav_menu.addAction(manage_bookmarks_menu_action)
 
     def create_toolbar(self):
         self.toolbar = self.addToolBar('Navigation')
@@ -828,6 +984,44 @@ class WebCrawler(QMainWindow):
             self.refresh_action.setText('🔄 Refresh')
         self.refresh_action.triggered.connect(self.refresh_current)
         self.toolbar.addAction(self.refresh_action)
+        
+        self.toolbar.addSeparator()
+        
+        # Search functionality
+        self.search_action = QAction('Search', self)
+        search_icon = self.get_ui_icon('search')
+        if search_icon:
+            self.search_action.setIcon(search_icon)
+            self.search_action.setText('')  # Remove text, show only icon
+        else:
+            self.search_action.setText('Search')
+        self.search_action.setShortcut('Ctrl+F')
+        self.search_action.setToolTip('Search (Ctrl+F)')
+        self.search_action.triggered.connect(self.toggle_search)
+        self.toolbar.addAction(self.search_action)
+        
+        # Search input field (initially hidden)
+        self.search_field = QLineEdit()
+        self.search_field.setMaximumWidth(150)
+        self.search_field.setPlaceholderText('Search...')
+        self.search_field.returnPressed.connect(self.perform_search)
+        self.search_field.textChanged.connect(self.search_text_changed)
+        self.search_field.hide()
+        self.toolbar.addWidget(self.search_field)
+        
+        self.toolbar.addSeparator()
+        
+        # Bookmarks button (only visible in surf mode)
+        self.bookmarks_action = QAction('Bookmarks', self)
+        bookmarks_icon = self.get_ui_icon('view-more')
+        if bookmarks_icon:
+            self.bookmarks_action.setIcon(bookmarks_icon)
+            self.bookmarks_action.setText('')  # Remove text, show only icon
+        else:
+            self.bookmarks_action.setText('Bookmarks')  # Fallback text if no icon
+        self.bookmarks_action.triggered.connect(self.show_bookmarks_menu)
+        self.bookmarks_action.setVisible(False)  # Hidden by default
+        self.toolbar.addAction(self.bookmarks_action)
         
         self.toolbar.addSeparator()
         
@@ -1151,19 +1345,157 @@ class WebCrawler(QMainWindow):
         self.status_bar.setVisible(settings['show_statusbar'])
         self.statusbar_action.setChecked(settings['show_statusbar'])
         
-        # Update view mode
-        if 'view_mode' in settings:
-            self.set_view_mode(settings['view_mode'])
-        
-        # Update surf mode
-        if 'surf_mode' in settings:
-            self.surf_mode = settings['surf_mode']
-            self.surf_mode_action.setChecked(self.surf_mode)
-            self.update_surf_mode_icon()
-            if self.surf_mode:
-                self.enter_surf_mode()
+        # Update preview modes
+        if 'show_image_preview' in settings:
+            self.image_preview_action.setChecked(settings['show_image_preview'])
+            if settings['show_image_preview']:
+                self.enable_image_preview()
             else:
-                self.exit_surf_mode()
+                self.disable_image_preview()
+        
+        if 'show_text_preview' in settings:
+            self.text_preview_action.setChecked(settings['show_text_preview'])
+            if settings['show_text_preview']:
+                self.enable_text_preview()
+            else:
+                self.disable_text_preview()
+
+    def toggle_image_preview(self):
+        """Toggle image preview mode"""
+        enabled = self.image_preview_action.isChecked()
+        self.settings['show_image_preview'] = enabled
+        if enabled:
+            self.enable_image_preview()
+        else:
+            self.disable_image_preview()
+        self.save_settings()
+    
+    def toggle_text_preview(self):
+        """Toggle text preview mode"""
+        enabled = self.text_preview_action.isChecked()
+        self.settings['show_text_preview'] = enabled
+        if enabled:
+            self.enable_text_preview()
+        else:
+            self.disable_text_preview()
+        self.save_settings()
+    
+    def enable_image_preview(self):
+        """Enable image preview functionality"""
+        self.image_preview_action.setChecked(True)
+        # Image preview will show on demand
+    
+    def disable_image_preview(self):
+        """Disable image preview functionality"""
+        self.image_preview_action.setChecked(False)
+        self.hide_image_preview()
+    
+    def enable_text_preview(self):
+        """Enable text preview panel"""
+        self.text_preview_action.setChecked(True)
+        self.text_preview_panel.show()
+        # Split view: browser on left, text preview on right
+        self.main_splitter.setSizes([250, 475, 475])
+    
+    def disable_text_preview(self):
+        """Disable text preview panel"""
+        self.text_preview_action.setChecked(False)
+        self.text_preview_panel.hide()
+        self.main_splitter.setSizes([250, 950, 0])
+    
+    def show_image_preview(self, url):
+        """Show image preview overlay"""
+        if not self.settings.get('show_image_preview', False):
+            return
+        
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+            response = requests.get(url, timeout=10, headers=headers)
+            response.raise_for_status()
+            
+            pixmap = QPixmap()
+            if pixmap.loadFromData(response.content):
+                # Calculate overlay size (20% of main window)
+                overlay_width = int(self.width() * 0.2)
+                overlay_height = int(self.height() * 0.2)
+                
+                # Scale image to fit while maintaining aspect ratio
+                scaled_pixmap = pixmap.scaled(
+                    overlay_width - 40, overlay_height - 60,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                
+                self.image_label.setPixmap(scaled_pixmap)
+                
+                # Position overlay in lower right corner
+                x = self.width() - overlay_width - 20
+                y = self.height() - overlay_height - 60
+                self.image_preview_overlay.setGeometry(x, y, overlay_width, overlay_height)
+                self.image_preview_overlay.show()
+                
+        except Exception as e:
+            print(f"Error loading image: {e}")
+    
+    def hide_image_preview(self):
+        """Hide image preview overlay"""
+        self.image_preview_overlay.hide()
+    
+    def show_text_preview(self, url):
+        """Show text file preview in right panel"""
+        if not self.settings.get('show_text_preview', False):
+            return
+        
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+            response = requests.get(url, timeout=10, headers=headers)
+            response.raise_for_status()
+            
+            # Try to decode as text
+            text_content = response.content.decode('utf-8', errors='replace')
+            
+            # Limit preview size for performance
+            if len(text_content) > 100000:  # 100KB limit
+                text_content = text_content[:100000] + "\n\n[Preview truncated - file too large]"
+            
+            self.text_preview.setPlainText(text_content)
+            
+        except Exception as e:
+            self.text_preview.setPlainText(f"Error loading text file: {str(e)}")
+    
+    def clear_text_preview(self):
+        """Clear text preview panel"""
+        self.text_preview.clear()
+    
+    def is_image_file(self, filename):
+        """Check if file is an image"""
+        image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp', '.svg', '.ico'}
+        _, ext = os.path.splitext(filename.lower())
+        return ext in image_extensions
+    
+    def is_text_file(self, filename):
+        """Check if file is a text file"""
+        text_extensions = {'.txt', '.py', '.js', '.html', '.htm', '.css', '.json', '.xml', '.yaml', '.yml', 
+                          '.md', '.rst', '.log', '.cfg', '.conf', '.ini', '.sh', '.bash', '.bat', '.ps1',
+                          '.c', '.cpp', '.h', '.hpp', '.java', '.php', '.rb', '.go', '.rs', '.swift',
+                          '.sql', '.csv', '.tsv', '.rtf'}
+        _, ext = os.path.splitext(filename.lower())
+        return ext in text_extensions
+    
+    def resizeEvent(self, event):
+        """Handle window resize - reposition image preview"""
+        super().resizeEvent(event)
+        if hasattr(self, 'image_preview_overlay') and self.image_preview_overlay.isVisible():
+            # Reposition image preview overlay
+            overlay_width = int(self.width() * 0.2)
+            overlay_height = int(self.height() * 0.2)
+            x = self.width() - overlay_width - 20
+            y = self.height() - overlay_height - 60
+            self.image_preview_overlay.setGeometry(x, y, overlay_width, overlay_height)
     
     def update_surf_mode_icon(self):
         """Update the surf mode icon"""
@@ -1184,6 +1516,7 @@ class WebCrawler(QMainWindow):
             self.surf_mode = self.surf_mode_action.isChecked()
             self.settings['surf_mode'] = self.surf_mode
             self.update_surf_mode_icon()
+            self.update_bookmarks_visibility()
             
             if self.surf_mode:
                 self.enter_surf_mode()
@@ -1199,6 +1532,348 @@ class WebCrawler(QMainWindow):
             self.surf_mode_action.setChecked(False)
             self.settings['surf_mode'] = False
             self.exit_surf_mode()
+
+    def update_bookmarks_visibility(self):
+        """Show/hide bookmarks button based on surf mode"""
+        self.bookmarks_action.setVisible(self.surf_mode)
+
+    # Bookmarks functionality
+    def show_bookmarks_menu(self):
+        """Show bookmarks dropdown menu"""
+        menu = QMenu(self)
+        
+        # Add current page to bookmarks
+        add_bookmark_action = QAction('Add Current Page', self)
+        add_bookmark_action.triggered.connect(self.add_current_bookmark)
+        menu.addAction(add_bookmark_action)
+        
+        # Manage bookmarks
+        manage_bookmarks_action = QAction('Manage Bookmarks...', self)
+        manage_bookmarks_action.triggered.connect(self.manage_bookmarks)
+        menu.addAction(manage_bookmarks_action)
+        
+        if self.settings.get('bookmarks'):
+            menu.addSeparator()
+            
+            # Show start page (first bookmark) with special indicator
+            if len(self.settings['bookmarks']) > 0:
+                start_page = self.settings['bookmarks'][0]
+                start_page_action = QAction(f"[START] {start_page['title']}", self)
+                start_page_action.setToolTip(f"Start Page: {start_page['url']}")
+                start_page_action.triggered.connect(lambda: self.navigate_to_bookmark(start_page['url']))
+                menu.addAction(start_page_action)
+                
+                # Show other bookmarks if any
+                if len(self.settings['bookmarks']) > 1:
+                    menu.addSeparator()
+                    for bookmark in self.settings['bookmarks'][1:]:
+                        bookmark_action = QAction(bookmark['title'], self)
+                        bookmark_action.setToolTip(bookmark['url'])
+                        bookmark_action.triggered.connect(lambda checked, url=bookmark['url']: self.navigate_to_bookmark(url))
+                        menu.addAction(bookmark_action)
+        
+        # Show menu at bookmarks button position
+        button_rect = self.toolbar.actionGeometry(self.bookmarks_action)
+        menu_pos = self.toolbar.mapToGlobal(button_rect.bottomLeft())
+        menu.exec(menu_pos)
+
+    def add_current_bookmark(self):
+        """Add current URL as bookmark"""
+        if not self.current_url:
+            return
+        
+        # Get page title if available
+        title = self.current_url
+        if self.webengine_available and hasattr(self.web_view, 'title'):
+            page_title = self.web_view.title()
+            if page_title:
+                title = page_title
+        
+        # Simple dialog to get bookmark name
+        from PyQt6.QtWidgets import QInputDialog
+        bookmark_name, ok = QInputDialog.getText(
+            self, 'Add Bookmark', 'Bookmark name:', text=title
+        )
+        
+        if ok and bookmark_name:
+            bookmark = {
+                'title': bookmark_name,
+                'url': self.current_url
+            }
+            
+            if 'bookmarks' not in self.settings:
+                self.settings['bookmarks'] = []
+            
+            # Check if bookmark already exists
+            for existing in self.settings['bookmarks']:
+                if existing['url'] == self.current_url:
+                    existing['title'] = bookmark_name  # Update title
+                    self.save_settings()
+                    self.status_bar.showMessage(f'Updated bookmark: {bookmark_name}')
+                    return
+            
+            # Add new bookmark
+            self.settings['bookmarks'].append(bookmark)
+            self.save_settings()
+            self.status_bar.showMessage(f'Added bookmark: {bookmark_name}')
+
+    def manage_bookmarks(self):
+        """Open bookmarks management dialog"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Manage Bookmarks')
+        dialog.setModal(True)
+        dialog.setMinimumSize(500, 400)
+        
+        layout = QVBoxLayout()
+        
+        # Instructions
+        info_label = QLabel('First bookmark in list is automatically used as start page')
+        info_label.setStyleSheet("QLabel { font-weight: bold; color: #0066cc; }")
+        layout.addWidget(info_label)
+        
+        # Bookmarks list
+        bookmarks_list = QListWidget()
+        if 'bookmarks' in self.settings:
+            for i, bookmark in enumerate(self.settings['bookmarks']):
+                prefix = "[START] " if i == 0 else ""
+                item = QListWidgetItem(f"{prefix}{bookmark['title']} - {bookmark['url']}")
+                item.setData(Qt.ItemDataRole.UserRole, bookmark)
+                bookmarks_list.addItem(item)
+        
+        layout.addWidget(QLabel('Bookmarks:'))
+        layout.addWidget(bookmarks_list)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        # Move up/down buttons
+        move_up_button = QPushButton('Move Up')
+        def move_bookmark_up():
+            current_row = bookmarks_list.currentRow()
+            if current_row > 0:
+                bookmark = self.settings['bookmarks'].pop(current_row)
+                self.settings['bookmarks'].insert(current_row - 1, bookmark)
+                self.refresh_bookmarks_list(bookmarks_list)
+                bookmarks_list.setCurrentRow(current_row - 1)
+        move_up_button.clicked.connect(move_bookmark_up)
+        button_layout.addWidget(move_up_button)
+        
+        move_down_button = QPushButton('Move Down')
+        def move_bookmark_down():
+            current_row = bookmarks_list.currentRow()
+            if current_row >= 0 and current_row < len(self.settings['bookmarks']) - 1:
+                bookmark = self.settings['bookmarks'].pop(current_row)
+                self.settings['bookmarks'].insert(current_row + 1, bookmark)
+                self.refresh_bookmarks_list(bookmarks_list)
+                bookmarks_list.setCurrentRow(current_row + 1)
+        move_down_button.clicked.connect(move_bookmark_down)
+        button_layout.addWidget(move_down_button)
+        
+        button_layout.addStretch()
+        
+        edit_button = QPushButton('Edit')
+        def edit_bookmark():
+            current_item = bookmarks_list.currentItem()
+            if current_item:
+                bookmark = current_item.data(Qt.ItemDataRole.UserRole)
+                from PyQt6.QtWidgets import QInputDialog
+                new_title, ok = QInputDialog.getText(
+                    dialog, 'Edit Bookmark', 'Bookmark name:', text=bookmark['title']
+                )
+                if ok and new_title:
+                    bookmark['title'] = new_title
+                    self.refresh_bookmarks_list(bookmarks_list)
+        
+        edit_button.clicked.connect(edit_bookmark)
+        button_layout.addWidget(edit_button)
+        
+        delete_button = QPushButton('Delete')
+        def delete_bookmark():
+            current_item = bookmarks_list.currentItem()
+            if current_item:
+                current_row = bookmarks_list.currentRow()
+                self.settings['bookmarks'].pop(current_row)
+                self.refresh_bookmarks_list(bookmarks_list)
+        
+        delete_button.clicked.connect(delete_bookmark)
+        button_layout.addWidget(delete_button)
+        
+        button_layout.addStretch()
+        
+        close_button = QPushButton('Close')
+        def close_dialog():
+            self.save_settings()
+            dialog.accept()
+        
+        close_button.clicked.connect(close_dialog)
+        button_layout.addWidget(close_button)
+        
+        layout.addLayout(button_layout)
+        dialog.setLayout(layout)
+        dialog.exec()
+    
+    def refresh_bookmarks_list(self, bookmarks_list):
+        """Refresh the bookmarks list display"""
+        bookmarks_list.clear()
+        for i, bookmark in enumerate(self.settings['bookmarks']):
+            prefix = "[START] " if i == 0 else ""
+            item = QListWidgetItem(f"{prefix}{bookmark['title']} - {bookmark['url']}")
+            item.setData(Qt.ItemDataRole.UserRole, bookmark)
+            bookmarks_list.addItem(item)
+
+    def get_start_page_url(self):
+        """Get the start page URL (first bookmark)"""
+        if self.settings.get('bookmarks') and len(self.settings['bookmarks']) > 0:
+            return self.settings['bookmarks'][0]['url']
+        return None
+
+    def navigate_to_bookmark(self, url):
+        """Navigate to bookmarked URL"""
+        self.add_to_history(self.current_url)
+        if self.surf_mode:
+            if self.webengine_available:
+                self.web_view.setUrl(QUrl(url))
+            else:
+                self.load_html_as_text(url)
+            self.current_url = url
+            self.url_edit.setText(url)
+        else:
+            self.load_directory(url)
+
+    # Search functionality
+    def toggle_search(self):
+        """Toggle search field visibility"""
+        print(f"Toggle search called - current visibility: {self.search_field.isVisible()}")  # Debug
+        try:
+            if self.search_field.isVisible():
+                self.search_field.hide()
+                self.search_active = False
+                self.clear_search_highlighting()
+                print("Search field hidden")  # Debug
+            else:
+                self.search_field.show()
+                self.search_field.setFocus()
+                self.search_active = True
+                print("Search field shown and focused")  # Debug
+        except Exception as e:
+            print(f"Error in toggle_search: {e}")
+
+    def search_text_changed(self, text):
+        """Handle search text changes for real-time search"""
+        if len(text) >= 2:  # Start searching after 2 characters
+            self.perform_search()
+        elif len(text) == 0:
+            self.clear_search_highlighting()
+
+    def perform_search(self):
+        """Perform search in current view"""
+        search_text = self.search_field.text().lower()
+        if not search_text:
+            return
+        
+        self.search_results = []
+        self.current_search_index = -1
+        
+        if self.surf_mode:
+            # Search in web view
+            if self.webengine_available:
+                # For WebEngine, use built-in find functionality
+                self.web_view.findText(search_text)
+                self.status_bar.showMessage(f"Searching for: {search_text}")
+            else:
+                # For text view, highlight matching text
+                self.search_in_text_view(search_text)
+        else:
+            # Search in file manager views
+            self.search_in_file_views(search_text)
+
+    def search_in_text_view(self, search_text):
+        """Search in text view (fallback web view)"""
+        if hasattr(self.web_view, 'toPlainText'):
+            content = self.web_view.toPlainText()
+            cursor = self.web_view.textCursor()
+            
+            # Find all occurrences
+            index = 0
+            while True:
+                index = content.lower().find(search_text, index)
+                if index == -1:
+                    break
+                self.search_results.append(index)
+                index += len(search_text)
+            
+            if self.search_results:
+                self.current_search_index = 0
+                self.highlight_search_result()
+                self.status_bar.showMessage(f'Found {len(self.search_results)} matches')
+            else:
+                self.status_bar.showMessage('No matches found')
+
+    def search_in_file_views(self, search_text):
+        """Search in file manager views"""
+        matching_items = []
+        
+        # Search through current items
+        for i, item in enumerate(self.current_items):
+            if search_text in item['name'].lower():
+                matching_items.append(i)
+        
+        self.search_results = matching_items
+        
+        if matching_items:
+            self.current_search_index = 0
+            self.highlight_file_search_result()
+            self.status_bar.showMessage(f'Found {len(matching_items)} matching files')
+        else:
+            self.status_bar.showMessage('No matching files found')
+
+    def highlight_search_result(self):
+        """Highlight current search result in text view"""
+        if not self.search_results or self.current_search_index < 0:
+            return
+        
+        if hasattr(self.web_view, 'textCursor'):
+            cursor = self.web_view.textCursor()
+            cursor.setPosition(self.search_results[self.current_search_index])
+            cursor.movePosition(cursor.MoveOperation.Right, cursor.MoveMode.KeepAnchor, len(self.search_field.text()))
+            self.web_view.setTextCursor(cursor)
+
+    def highlight_file_search_result(self):
+        """Highlight current search result in file views"""
+        if not self.search_results or self.current_search_index < 0:
+            return
+        
+        item_index = self.search_results[self.current_search_index]
+        
+        # Clear previous selections
+        self.file_table.clearSelection()
+        self.file_list.clearSelection()
+        self.icon_view.clearSelection()
+        
+        # Highlight in appropriate view
+        if self.file_table.isVisible():
+            self.file_table.selectRow(item_index)
+            self.file_table.scrollToItem(self.file_table.item(item_index, 0))
+        elif self.file_list.isVisible():
+            self.file_list.setCurrentRow(item_index)
+            self.file_list.scrollToItem(self.file_list.item(item_index))
+        elif self.icon_view.isVisible():
+            self.icon_view.setCurrentRow(item_index)
+            self.icon_view.scrollToItem(self.icon_view.item(item_index))
+
+    def clear_search_highlighting(self):
+        """Clear search highlighting"""
+        self.search_results = []
+        self.current_search_index = -1
+        
+        if self.surf_mode:
+            if self.webengine_available:
+                self.web_view.findText("")  # Clear WebEngine search
+        else:
+            # Clear file view selections
+            self.file_table.clearSelection()
+            self.file_list.clearSelection()
+            self.icon_view.clearSelection()
     
     def enter_surf_mode(self):
         """Enter web browser mode"""
@@ -1592,17 +2267,24 @@ class WebCrawler(QMainWindow):
                     self.load_directory(parent_url)
 
     def go_home(self):
-        if self.current_url != self.base_url:
+        # Check if there's a start page set (first bookmark)
+        start_page_url = self.get_start_page_url()
+        if start_page_url:
+            target_url = start_page_url
+        else:
+            target_url = self.base_url
+            
+        if self.current_url != target_url:
             self.add_to_history(self.current_url)
             if self.surf_mode:
                 if self.webengine_available:
-                    self.web_view.setUrl(QUrl(self.base_url))
+                    self.web_view.setUrl(QUrl(target_url))
                 else:
-                    self.load_html_as_text(self.base_url)
-                self.current_url = self.base_url
-                self.url_edit.setText(self.base_url)
+                    self.load_html_as_text(target_url)
+                self.current_url = target_url
+                self.url_edit.setText(target_url)
             else:
-                self.load_directory(self.base_url)
+                self.load_directory(target_url)
 
     def refresh_current(self):
         if self.surf_mode:
@@ -1708,6 +2390,32 @@ class WebCrawler(QMainWindow):
         
         self.info_text.setPlainText(info_text)
         self.download_button.setEnabled(data['type'] == 'file')
+        
+        # Handle preview for files
+        if data['type'] == 'file':
+            file_url = urljoin(self.current_url, data['href'])
+            filename = data['name']
+            
+            # Clear previous previews
+            self.hide_image_preview()
+            self.clear_text_preview()
+            
+            # Show appropriate preview
+            if self.is_image_file(filename):
+                self.show_image_preview(file_url)
+            elif self.is_text_file(filename):
+                self.show_text_preview(file_url)
+        else:
+            # Clear previews for directories
+            self.hide_image_preview()
+            self.clear_text_preview()
+    
+    def clear_info_panel(self):
+        """Clear the file information panel"""
+        self.info_text.clear()
+        self.download_button.setEnabled(False)
+        self.hide_image_preview()
+        self.clear_text_preview()
     
     def clear_info_panel(self):
         """Clear the file information panel"""
@@ -1817,6 +2525,31 @@ class WebCrawler(QMainWindow):
         """Save settings when closing the application"""
         self.save_settings()
         event.accept()
+
+    def keyPressEvent(self, event):
+        """Handle keyboard shortcuts"""
+        if event.key() == Qt.Key.Key_F3:
+            # F3 for next search result
+            if self.search_active and self.search_results:
+                self.current_search_index = (self.current_search_index + 1) % len(self.search_results)
+                if self.surf_mode:
+                    self.highlight_search_result()
+                else:
+                    self.highlight_file_search_result()
+        elif event.key() == Qt.Key.Key_F3 and event.modifiers() == Qt.KeyboardModifier.ShiftModifier:
+            # Shift+F3 for previous search result
+            if self.search_active and self.search_results:
+                self.current_search_index = (self.current_search_index - 1) % len(self.search_results)
+                if self.surf_mode:
+                    self.highlight_search_result()
+                else:
+                    self.highlight_file_search_result()
+        elif event.key() == Qt.Key.Key_Escape:
+            # Escape to close search
+            if self.search_active:
+                self.toggle_search()
+        else:
+            super().keyPressEvent(event)
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
