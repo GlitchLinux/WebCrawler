@@ -317,7 +317,7 @@ class WebCrawler(QMainWindow):
         # Default settings
         self.settings = {
             'font_family': 'FiraCode',
-            'font_size': 12,
+            'font_size': 14,
             'show_tree': True,
             'show_info': True,
             'show_toolbar': True,
@@ -398,7 +398,7 @@ class WebCrawler(QMainWindow):
 
     def initUI(self):
         self.setWindowTitle('WebCrawler - Apache File Index Browser')
-        self.setGeometry(100, 100, 1200, 800)
+        self.setGeometry(100, 100, 100, 700)
 
         # Set the same dark theme as the original script
         palette = QPalette()
